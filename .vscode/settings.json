@@ -1,0 +1,26 @@
+{
+  "npm.packageManager": "npm",
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact"
+  ],
+  "files.watcherExclude": {
+    "**/.expo/**": true,
+    "**/.expo-shared/**": true,
+    "**/android/.gradle/**": true,
+    "**/android/app/build/**": true,
+    "**/ios/Pods/**": true,
+    "**/node_modules/**": true
+  },
+  "search.exclude": {
+    "**/.expo": true,
+    "**/.expo-shared": true,
+    "**/android/.gradle": true,
+    "**/android/app/build": true,
+    "**/ios/Pods": true
+  }
+}

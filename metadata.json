@@ -1,0 +1,6 @@
+{
+  "name": "CVPilot",
+  "description": "Plateforme d'accélération de carrière propulsée par l'IA : création de CV, lettres de motivation, suivi des candidatures, simulation d'entretien vocale, audit LinkedIn, portfolio et stratégie de carrière.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,15 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+.env.local
+!.env.example
+.*token*
+.test_*
+.scratch_*
+scratch_*.mjs
+.claude/
+supabase/.temp/

@@ -1,0 +1,14 @@
+-- DEPRECATED — do not use.
+--
+-- This file was a hand-generated full-schema snapshot of the production
+-- Supabase project. It has drifted from both the live database and from
+-- src/database/supabase_schema.sql (a second, differently-drifted snapshot),
+-- and neither one is applied by any tooling.
+--
+-- The canonical, applied schema is the migration sequence in
+-- src/database/migrations/, run in numeric order (000_full_supabase_schema.sql
+-- first, then 001 through the highest-numbered file). See README.md's
+-- "Database" section for how to bootstrap a clean project from it.
+--
+-- This file is kept only so its history remains in git; it is not read by
+-- any script and must not be pasted into a new project.

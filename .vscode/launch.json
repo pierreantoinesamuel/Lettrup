@@ -1,0 +1,46 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Expo: Debug Expo Go",
+      "request": "launch",
+      "type": "reactnativedirect",
+      "cwd": "${workspaceFolder}",
+      "platform": "exponent",
+      "expoHostType": "lan"
+    },
+    {
+      "name": "Expo: Debug Expo Go (Localhost)",
+      "request": "launch",
+      "type": "reactnativedirect",
+      "cwd": "${workspaceFolder}",
+      "platform": "exponent",
+      "expoHostType": "localhost"
+    },
+    {
+      "name": "Expo: Debug Web in Chrome",
+      "request": "launch",
+      "type": "reactnativedirect",
+      "cwd": "${workspaceFolder}",
+      "platform": "expoweb",
+      "browserTarget": "chrome",
+      "url": "http://localhost:8081"
+    },
+    {
+      "name": "React Native: Debug Android",
+      "request": "launch",
+      "type": "reactnativedirect",
+      "cwd": "${workspaceFolder}",
+      "platform": "android",
+      "target": "simulator"
+    },
+    {
+      "name": "React Native: Debug iOS",
+      "request": "launch",
+      "type": "reactnativedirect",
+      "cwd": "${workspaceFolder}",
+      "platform": "ios",
+      "target": "simulator"
+    }
+  ]
+}

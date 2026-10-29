@@ -1,0 +1,49 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Expo: Start",
+      "type": "shell",
+      "command": "npx expo start",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "Expo: Start (clear cache)",
+      "type": "shell",
+      "command": "npx expo start --clear",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "Expo: Doctor",
+      "type": "shell",
+      "command": "npx expo-doctor",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "React Native: Run Android Emulator",
+      "command": "${command:reactNative.runAndroidSimulator}",
+      "problemMatcher": []
+    },
+    {
+      "label": "React Native: Run iOS Simulator",
+      "command": "${command:reactNative.runIosSimulator}",
+      "problemMatcher": []
+    },
+    {
+      "label": "React Native: Run Expo",
+      "command": "${command:reactNative.runExponent}",
+      "problemMatcher": []
+    }
+  ]
+}
