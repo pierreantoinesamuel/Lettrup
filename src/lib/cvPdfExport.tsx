@@ -15,6 +15,9 @@
  * full width, with no repeated header. Pagination is computed only at
  * export time — the live editor keeps its existing continuous-scroll
  * preview unchanged.
+ *
+ * The page plan is computed by `planCvPages`, which the export dialog also
+ * uses to preview the exact pages that will be downloaded.
  */
 
 import { createRoot } from 'react-dom/client';
@@ -22,7 +25,7 @@ import { flushSync } from 'react-dom';
 import { toPng, toCanvas } from 'html-to-image';
 import React from 'react';
 import { ResumePreview, ResumeData, ResumeSectionId } from '../components/resume-preview/ResumePreview';
-import { TemplateType } from '../templates';
+import { TemplateType, TEMPLATES } from '../templates';
 import { paginateBlocks, MeasuredBlock } from './cvPagination';
 
 export interface ExportResumeToPdfParams {
@@ -33,6 +36,21 @@ export interface ExportResumeToPdfParams {
   mainColumnOrder: ResumeSectionId[];
   sideColumnOrder: ResumeSectionId[];
   fileName: string;
+}
+
+/** What one exported page is made of: the props to hand to ResumePreview (minus its DOM id). */
+export interface CvPageSpec {
+  props: {
+    data: ResumeData;
+    template: TemplateType;
+    showHeader: boolean;
+    layout: 'single' | 'double';
+    singleColumnOrder: ResumeSectionId[];
+    mainColumnOrder: ResumeSectionId[];
+    sideColumnOrder: ResumeSectionId[];
+  };
+  /** A single block taller than a page: exported by slicing its canvas over several PDF pages. */
+  oversized: boolean;
 }
 
 interface CollectedBlock extends MeasuredBlock {
@@ -105,7 +123,7 @@ function collectMainColumnBlocks(mainRegionEl: HTMLElement, order: ResumeSection
  * this page. Sections that live in the sidebar (not part of `paginatedSectionIds`)
  * pass through unfiltered — their visibility on a given page is controlled
  * entirely by whether that page's column-order props include them at all
- * (only page 1 does; see exportResumeToPdf).
+ * (only page 1 does; see planCvPages).
  */
 function buildPageData(fullData: ResumeData, blockIdsOnThisPage: Set<string>, paginatedSectionIds: Set<ResumeSectionId>): ResumeData {
   const filterArray = <T extends { id: string }>(sectionId: ResumeSectionId, items: T[]): T[] =>
@@ -137,27 +155,39 @@ function buildPageData(fullData: ResumeData, blockIdsOnThisPage: Set<string>, pa
   };
 }
 
-export async function exportResumeToPdf(params: ExportResumeToPdfParams): Promise<void> {
-  const { data, template, layout, singleColumnOrder, mainColumnOrder, sideColumnOrder, fileName } = params;
+function createOffscreenRoot() {
+  const container = document.createElement('div');
+  container.style.position = 'fixed';
+  container.style.left = '-99999px';
+  container.style.top = '0';
+  container.style.width = `${A4_WIDTH_MM}mm`;
+  document.body.appendChild(container);
+  return { container, root: createRoot(container) };
+}
 
-  // jsPDF is only needed at the moment of export, not just because the
-  // builder page loaded — deferring it keeps it out of the builder's route
-  // chunk for everyone who edits but never downloads a PDF this session.
-  const { jsPDF } = await import('jspdf');
+/**
+ * Splits the CV into the A4 pages that get exported. Used by the PDF export
+ * and by the export dialog's preview, so both always show the same pages.
+ */
+export async function planCvPages(params: Omit<ExportResumeToPdfParams, 'fileName'>): Promise<CvPageSpec[]> {
+  const { data, template, layout, singleColumnOrder, mainColumnOrder, sideColumnOrder } = params;
 
-  const orderForMain = template === 'classic-compact' ? singleColumnOrder : layout === 'double' ? mainColumnOrder : singleColumnOrder;
+  const t = TEMPLATES[template];
+  const isTwoColumn = template !== 'classic-compact' && (
+    layout === 'double' ||
+    t?.layoutVariant === 'left-sidebar' ||
+    t?.layoutVariant === 'two-column'
+  );
+  const orderForMain = isTwoColumn ? mainColumnOrder : singleColumnOrder;
   const paginatedSectionIds = new Set(orderForMain);
 
-  const hiddenContainer = document.createElement('div');
-  hiddenContainer.style.position = 'fixed';
-  hiddenContainer.style.left = '-99999px';
-  hiddenContainer.style.top = '0';
-  document.body.appendChild(hiddenContainer);
-  const root = createRoot(hiddenContainer);
+  // Callers may start this from a React effect, where flushSync is not allowed:
+  // let the current render finish first. Also wait for the web fonts, so the
+  // blocks are measured with the same glyph widths the exported page will have.
+  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  if (document.fonts?.ready) await document.fonts.ready;
 
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
-  let isFirstPdfPage = true;
-
+  const { container, root } = createOffscreenRoot();
   try {
     // Measure off a dedicated offscreen, always-100%-scale instance — never
     // the live editor preview. The live preview sits inside a user-controlled
@@ -181,7 +211,7 @@ export async function exportResumeToPdf(params: ExportResumeToPdfParams): Promis
         })
       );
     });
-    const measureEl = hiddenContainer.querySelector<HTMLElement>('#resume-preview-measure');
+    const measureEl = container.querySelector<HTMLElement>('#resume-preview-measure');
     if (!measureEl) {
       throw new Error('Aperçu du CV introuvable pour la mesure de pagination.');
     }
@@ -201,30 +231,69 @@ export async function exportResumeToPdf(params: ExportResumeToPdfParams): Promis
 
     const pagePlan = paginateBlocks(blockHeights, usablePageHeightPx, firstPageMainBudgetPx);
 
-    for (let pageIndex = 0; pageIndex < pagePlan.length; pageIndex++) {
-      const page = pagePlan[pageIndex];
+    // If everything fits on a single page, return the full unadulterated resume data
+    // so the export preview and downloaded PDF are 100% faithful to the live editor preview.
+    if (pagePlan.length === 1) {
+      return [
+        {
+          oversized: Boolean(pagePlan[0].oversizedBlockId),
+          props: {
+            data,
+            template,
+            showHeader: true,
+            layout,
+            singleColumnOrder,
+            mainColumnOrder,
+            sideColumnOrder,
+          },
+        },
+      ];
+    }
+
+    return pagePlan.map((page, pageIndex) => {
       const isFirstPage = pageIndex === 0;
-      const blockIdsSet = new Set(page.blockIds);
-      const pageData = buildPageData(data, blockIdsSet, paginatedSectionIds);
-
-      const renderProps = {
-        id: EXPORT_PAGE_ID,
-        data: pageData,
-        template,
-        showHeader: isFirstPage,
-        layout: (isFirstPage ? layout : 'single') as 'single' | 'double',
-        singleColumnOrder: isFirstPage ? singleColumnOrder : orderForMain,
-        mainColumnOrder: isFirstPage ? mainColumnOrder : orderForMain,
-        sideColumnOrder: isFirstPage ? sideColumnOrder : [],
+      return {
+        oversized: Boolean(page.oversizedBlockId),
+        props: {
+          data: buildPageData(data, new Set(page.blockIds), paginatedSectionIds),
+          template,
+          showHeader: isFirstPage,
+          layout: (isFirstPage ? layout : 'single') as 'single' | 'double',
+          singleColumnOrder: isFirstPage ? singleColumnOrder : orderForMain,
+          mainColumnOrder: isFirstPage ? mainColumnOrder : orderForMain,
+          sideColumnOrder: isFirstPage ? (isTwoColumn ? sideColumnOrder : []) : [],
+        },
       };
+    });
+  } finally {
+    root.unmount();
+    document.body.removeChild(container);
+  }
+}
 
+export async function exportResumeToPdf(params: ExportResumeToPdfParams): Promise<void> {
+  const { fileName, ...planParams } = params;
+
+  // jsPDF is only needed at the moment of export, not just because the
+  // builder page loaded — deferring it keeps it out of the builder's route
+  // chunk for everyone who edits but never downloads a PDF this session.
+  const { jsPDF } = await import('jspdf');
+
+  const pages = await planCvPages(planParams);
+
+  const { container, root } = createOffscreenRoot();
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  let isFirstPdfPage = true;
+
+  try {
+    for (const page of pages) {
       flushSync(() => {
-        root.render(React.createElement(ResumePreview, renderProps));
+        root.render(React.createElement(ResumePreview, { id: EXPORT_PAGE_ID, ...page.props }));
       });
-      const pageEl = hiddenContainer.querySelector<HTMLElement>(`#${EXPORT_PAGE_ID}`);
+      const pageEl = container.querySelector<HTMLElement>(`#${EXPORT_PAGE_ID}`);
       if (!pageEl) continue;
 
-      if (page.oversizedBlockId) {
+      if (page.oversized) {
         // A single block alone is taller than a full page (e.g. one
         // extraordinarily long description) — never truncate it: canvas-slice
         // it across as many physical pages as it actually needs, the same
@@ -250,14 +319,14 @@ export async function exportResumeToPdf(params: ExportResumeToPdfParams): Promis
         continue;
       }
 
-      const dataUrl = await toPng(pageEl, { quality: 0.98, pixelRatio: 2 });
+      const dataUrl = await toPng(pageEl, { quality: 0.98, pixelRatio: 2, backgroundColor: '#ffffff' });
       if (!isFirstPdfPage) pdf.addPage();
       pdf.addImage(dataUrl, 'PNG', 0, 0, A4_WIDTH_MM, A4_HEIGHT_MM);
       isFirstPdfPage = false;
     }
   } finally {
     root.unmount();
-    document.body.removeChild(hiddenContainer);
+    document.body.removeChild(container);
   }
 
   pdf.save(`${fileName}.pdf`);

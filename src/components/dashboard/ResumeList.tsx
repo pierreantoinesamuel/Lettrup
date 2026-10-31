@@ -16,10 +16,18 @@ import {
   updateUserResumeAtsScore,
   ResumeListItem,
   FREE_TIER_CV_LIMIT_ERROR,
+  PRO_MONTHLY_CV_LIMIT_ERROR,
+  currentMonthStartIso,
+  monthlyCvLimitFor,
 } from '../../lib/resumeStore';
 
 const FREE_TIER_CV_LIMIT_MESSAGE =
   'Formule Gratuite : 1 CV maximum. Passez à Pro pour créer et enregistrer plusieurs CV.';
+const PRO_MONTHLY_CV_LIMIT_MESSAGE =
+  'Formule Pro : vous avez atteint vos 10 CV créés ce mois-ci. Passez à Max pour des CV illimités, ou réessayez le mois prochain.';
+import { computeAtsAnalysis } from '../../lib/atsScoring';
+import { recordCvHistoryEvent } from '../../lib/cvScoreHistory';
+import type { NewCvHistoryEntry } from '../../lib/cvScoreHistory';
 import CvTailoringModal from './CvTailoringModal';
 import AtsScannerModal from './AtsScannerModal';
 import CvCard from './CvCard';
@@ -48,6 +56,16 @@ export default function ResumeList() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const atsAttemptedRef = useRef(new Set<string>());
+
+  // The scan history is a log: failing to write to it must never block the action it records.
+  const logHistory = async (resumeId: string, entry: NewCvHistoryEntry) => {
+    if (!user?.id) return;
+    try {
+      await recordCvHistoryEvent(resumeId, user.id, entry);
+    } catch (error) {
+      console.error('Could not record the CV history:', error);
+    }
+  };
 
   useEffect(() => {
     if (!user?.id) {
@@ -130,9 +148,19 @@ export default function ResumeList() {
     try {
       const created = await duplicateUserResume(resume, user.id, user.plan);
       setResumes(prev => [created, ...prev]);
+      await logHistory(created.id, {
+        kind: 'duplicate',
+        label: `Copie de « ${resume.name} »`,
+        scoreBefore: null,
+        scoreAfter: computeAtsAnalysis(resume.resumeData || {}, 'minimalist').overallScore,
+        before: null,
+        after: resume.resumeData || {},
+      });
     } catch (e: any) {
       if (e?.message === FREE_TIER_CV_LIMIT_ERROR) {
         alert(FREE_TIER_CV_LIMIT_MESSAGE);
+      } else if (e?.message === PRO_MONTHLY_CV_LIMIT_ERROR) {
+        alert(PRO_MONTHLY_CV_LIMIT_MESSAGE);
       } else {
         console.error('Error duplicating resume:', e);
       }
@@ -145,6 +173,17 @@ export default function ResumeList() {
     setResumes(prev => prev.map(r => ({ ...r, isPrimary: r.id === resume.id })));
     try {
       await setPrimaryResume(resume.id, user.id);
+      const score = resume.atsAnalyzed
+        ? resume.atsScore
+        : computeAtsAnalysis(resume.resumeData || {}, 'minimalist').overallScore;
+      await logHistory(resume.id, {
+        kind: 'primary',
+        label: 'Défini comme CV principal',
+        scoreBefore: score,
+        scoreAfter: score,
+        before: resume.resumeData || {},
+        after: resume.resumeData || {},
+      });
     } catch (e) {
       console.error('Error setting primary resume:', e);
       setResumes(previousResumes);
@@ -174,7 +213,7 @@ export default function ResumeList() {
       const { extractTextFromFile, parseAndBuildResumeData } = await import('../../utils/resumeParser');
       const rawText = await extractTextFromFile(file);
       if (!rawText || rawText.trim().length < 15) {
-        alert('Aucun texte lisible n’a été trouvé dans ce fichier. Vérifiez qu’il s’agit d’un PDF contenant du texte, d’un DOCX, d’un DOC ou d’un TXT.');
+        alert("Impossible d'extraire le texte de ce document. S'il s'agit d'un scan ou d'une image, veillez à ce que le texte soit net, ou utilisez un fichier Word (.docx), PDF ou TXT.");
         setIsUploading(false);
         if (e.target) e.target.value = '';
         return;
@@ -191,6 +230,8 @@ export default function ResumeList() {
 
       const candidateName = parsedResume?.coordonnees?.name || file.name.replace(/\.[^/.]+$/, "");
       const jobTitle = parsedResume?.coordonnees?.jobTitle || 'Importé';
+      // Same scorer and default template as the builder, so the card, the builder and the history agree.
+      const importScore = computeAtsAnalysis(parsedResume || {}, 'minimalist').overallScore;
 
       const created = await createUserResume(
         user.id,
@@ -203,10 +244,8 @@ export default function ResumeList() {
             template: 'Fichier Importé',
             fileName: file.name,
             fileSize: `${Math.round(file.size / 1024)} KB`,
-            ...(atsAnalysis ? {
-              atsScore: atsAnalysis.atsScore,
-              keywordsCount: atsAnalysis.missingKeywords.length,
-            } : {}),
+            atsScore: importScore,
+            keywordsCount: atsAnalysis?.missingKeywords.length ?? 0,
           },
         },
         user.plan
@@ -214,13 +253,21 @@ export default function ResumeList() {
 
       setResumes(prev => [created, ...prev]);
       setUploadedLastId(created.id);
-      setUploadSuccessMsg(atsAnalysis
-        ? `Le CV "${file.name}" a été importé et analysé par l’ATS (score : ${atsAnalysis.atsScore}/100).`
-        : `Le CV "${file.name}" a été importé, mais l’analyse ATS est indisponible. Rechargez la page pour réessayer.`);
-      setAtsBackfillError(atsAnalysis ? null : 'L’analyse ATS de ce CV n’a pas abouti. Rechargez la page pour réessayer.');
+      await logHistory(created.id, {
+        kind: 'import',
+        label: `CV importé (${file.name})`,
+        scoreBefore: null,
+        scoreAfter: importScore,
+        before: null,
+        after: parsedResume || {},
+      });
+      setUploadSuccessMsg(`Le CV "${file.name}" a été importé et analysé par l’ATS (score : ${importScore}/100).`);
+      setAtsBackfillError(null);
     } catch (err: any) {
       if (err?.message === FREE_TIER_CV_LIMIT_ERROR) {
         alert(FREE_TIER_CV_LIMIT_MESSAGE);
+      } else if (err?.message === PRO_MONTHLY_CV_LIMIT_ERROR) {
+        alert(PRO_MONTHLY_CV_LIMIT_MESSAGE);
       } else {
         console.error('Upload parsing error:', err);
         alert('Une erreur est survenue lors de l\'analyse du CV. Veuillez réessayer avec un fichier PDF, DOCX, DOC ou TXT valide.');
@@ -256,6 +303,12 @@ export default function ResumeList() {
     : 0;
   const analyzedCount = analyzedResumes.length;
   const uploadedCount = resumes.filter(r => r.type === 'uploaded').length;
+  // Pro: 10 CVs created per calendar month (Max: unlimited, so no counter).
+  const monthlyCvLimit = monthlyCvLimitFor(user?.plan);
+  const cvsCreatedThisMonth = monthlyCvLimit === null
+    ? 0
+    : resumes.filter(r => r.createdAt >= currentMonthStartIso()).length;
+  const cvsLeftThisMonth = monthlyCvLimit === null ? null : Math.max(0, monthlyCvLimit - cvsCreatedThisMonth);
   const firstName = (user?.name || 'Thomas').trim().split(/\s+/)[0] || 'Thomas';
   const mobileProfileScore = analyzedCount > 0 ? avgAts : 78;
   const mobileGaugeRadius = 32;
@@ -420,6 +473,27 @@ export default function ResumeList() {
       {atsBackfillError && (
         <div role="alert" className="bg-[var(--status-orange)]/10 border border-[var(--status-orange)]/30 text-[#7c3f00] rounded-lg p-4 text-sm font-semibold">
           {atsBackfillError}
+        </div>
+      )}
+
+      {monthlyCvLimit !== null && cvsLeftThisMonth !== null && cvsLeftThisMonth <= 2 && (
+        <div
+          role="status"
+          className={`rounded-lg border p-4 text-sm font-semibold flex flex-wrap items-center justify-between gap-3 ${
+            cvsLeftThisMonth === 0
+              ? 'border-rose-200 bg-rose-50 text-rose-800'
+              : 'border-amber-200 bg-amber-50 text-amber-800'
+          }`}
+        >
+          <span>
+            {cvsCreatedThisMonth}/{monthlyCvLimit} CV créés ce mois-ci.{' '}
+            {cvsLeftThisMonth === 0
+              ? 'Limite atteinte : vous ne pouvez plus créer, importer ni dupliquer de CV avant le mois prochain.'
+              : `Plus que ${cvsLeftThisMonth} CV à créer ce mois-ci.`}
+          </span>
+          <Link to="/pricing" className="shrink-0 underline underline-offset-2 font-bold">
+            Passer à Max (illimité)
+          </Link>
         </div>
       )}
 

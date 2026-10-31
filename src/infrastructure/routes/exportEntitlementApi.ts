@@ -39,6 +39,9 @@ export interface CheckExportEntitlementApiResponse {
   entitled: boolean;
   source?: 'subscription' | 'quota' | 'one_time';
   reason?: 'quota_exceeded' | 'no_subscription';
+  /** Downloads already used this month and the monthly allowance, so the UI can warn before the limit. */
+  used?: number;
+  limit?: number;
   error?: string;
 }
 
@@ -46,7 +49,7 @@ function currentPeriodKey(): string {
   return new Date().toISOString().slice(0, 7); // 'YYYY-MM', UTC calendar month
 }
 
-async function hasQuotaRemaining(userId: string, documentType: DocumentType, limit: number): Promise<boolean> {
+async function getQuotaUsed(userId: string, documentType: DocumentType): Promise<number> {
   const admin = getSupabaseAdminClient();
   const { data } = await admin
     .from('plan_export_usage')
@@ -55,7 +58,7 @@ async function hasQuotaRemaining(userId: string, documentType: DocumentType, lim
     .eq('document_type', documentType)
     .eq('period_key', currentPeriodKey())
     .maybeSingle();
-  return (data?.count ?? 0) < limit;
+  return data?.count ?? 0;
 }
 
 async function findAvailableEntitlement(userId: string, documentType: DocumentType): Promise<string | null> {
@@ -92,14 +95,15 @@ export async function handleCheckExportEntitlementRoute(
     }
 
     if (limit > 0) {
-      if (await hasQuotaRemaining(user.id, reqBody.documentType, limit)) {
-        return { success: true, entitled: true, source: 'quota' };
+      const used = await getQuotaUsed(user.id, reqBody.documentType);
+      if (used < limit) {
+        return { success: true, entitled: true, source: 'quota', used, limit };
       }
       const entitlementId = await findAvailableEntitlement(user.id, reqBody.documentType);
       if (entitlementId) {
-        return { success: true, entitled: true, source: 'one_time' };
+        return { success: true, entitled: true, source: 'one_time', used, limit };
       }
-      return { success: true, entitled: false, reason: 'quota_exceeded' };
+      return { success: true, entitled: false, reason: 'quota_exceeded', used, limit };
     }
 
     const entitlementId = await findAvailableEntitlement(user.id, reqBody.documentType);

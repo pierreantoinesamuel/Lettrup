@@ -430,7 +430,8 @@ export default function LandingPage() {
       </section>
 
       {/* Blog & Guides Section */}
-      <section id="blog" className="py-20 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto border-t border-slate-100">
+      <section id="blog" className="bg-primary-container/60 py-20 lg:py-28">
+       <div className="px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
         <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-12">
           <div>
             <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">Derniers Articles & Guides Carrière</h2>
@@ -476,6 +477,7 @@ export default function LandingPage() {
             </Link>
           ))}
         </div>
+       </div>
       </section>
 
       {/* FAQ Accordion Section */}

@@ -1,4 +1,5 @@
 import JSZip from 'jszip';
+import pako from 'pako';
 import * as mammoth from 'mammoth';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import * as pdfjsWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs';
@@ -9,8 +10,26 @@ export { parseAndBuildResumeData } from './resumeDataMapper';
 // parser via LoopbackPort in-process instead of spawning an external Worker
 // URL (which Vite dev mode corrupts by injecting /@vite/client, and which
 // strict CSP rules can block in production).
-if (typeof globalThis !== 'undefined' && !(globalThis as any).pdfjsWorker) {
-  (globalThis as any).pdfjsWorker = pdfjsWorker;
+if (typeof globalThis !== 'undefined') {
+  const handler =
+    (pdfjsWorker as any)?.WorkerMessageHandler ||
+    (pdfjsWorker as any)?.default?.WorkerMessageHandler ||
+    (pdfjsWorker as any);
+  if (handler) {
+    (globalThis as any).pdfjsWorker = {
+      WorkerMessageHandler: handler,
+      ...((globalThis as any).pdfjsWorker || {}),
+    };
+  }
+}
+
+if (typeof window !== 'undefined') {
+  try {
+    // Avoid cross-origin worker loads that violate CSP default-src 'self'
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+  } catch {
+    // Ignore in non-browser environments
+  }
 }
 
 function decodeXmlEntities(text: string): string {
@@ -163,6 +182,136 @@ function extractTextFromLegacyDoc(arrayBuffer: ArrayBuffer): string {
   return utf16Text.length >= ansiText.length ? utf16Text : ansiText;
 }
 
+function parsePdfString(str: string): string {
+  return str
+    .replace(/\\\\/g, '\x00')
+    .replace(/\\([nrtbf])/g, (_, c) => (c === 'n' ? '\n' : c === 'r' ? '\r' : c === 't' ? '\t' : ' '))
+    .replace(/\\([0-7]{1,3})/g, (_, oct) => {
+      const code = parseInt(oct, 8);
+      return String.fromCharCode(code);
+    })
+    .replace(/\\\(/g, '(')
+    .replace(/\\\)/g, ')')
+    .replace(/\x00/g, '\\');
+}
+
+function parseHexPdfString(hex: string): string {
+  const clean = hex.replace(/\s+/g, '');
+  let result = '';
+  if (
+    clean.startsWith('FEFF') ||
+    clean.startsWith('feff') ||
+    (clean.length >= 8 && clean.length % 4 === 0 && clean.startsWith('00'))
+  ) {
+    const start = clean.startsWith('FEFF') || clean.startsWith('feff') ? 4 : 0;
+    for (let i = start; i + 3 < clean.length; i += 4) {
+      result += String.fromCharCode(parseInt(clean.slice(i, i + 4), 16));
+    }
+    return result;
+  }
+  for (let i = 0; i + 1 < clean.length; i += 2) {
+    result += String.fromCharCode(parseInt(clean.slice(i, i + 2), 16));
+  }
+  return result;
+}
+
+function extractTextFromStreamContent(streamContent: string): string {
+  const lines: string[] = [];
+  const textBlocks = streamContent.matchAll(/BT([\s\S]*?)ET/g);
+  for (const blockMatch of textBlocks) {
+    const block = blockMatch[1];
+
+    // Tj / ' / " operators
+    const tjMatches = block.matchAll(/(?:\(([^()\\]*(?:\\.[^()\\]*)*)\)|<([0-9a-fA-F\s]+)>)\s*(?:Tj|'|")/g);
+    for (const m of tjMatches) {
+      if (m[1] !== undefined) lines.push(parsePdfString(m[1]));
+      else if (m[2] !== undefined) lines.push(parseHexPdfString(m[2]));
+    }
+
+    // TJ array operator: [ (str) 100 <hex> ] TJ
+    const tjArrayMatches = block.matchAll(/\[([\s\S]*?)\]\s*TJ/g);
+    for (const arrayMatch of tjArrayMatches) {
+      const inner = arrayMatch[1];
+      let currentWord = '';
+      const tokenMatches = inner.matchAll(/(?:\(([^()\\]*(?:\\.[^()\\]*)*)\)|<([0-9a-fA-F\s]+)>|(-?\d+(?:\.\d+)?))/g);
+      for (const tm of tokenMatches) {
+        if (tm[1] !== undefined) {
+          currentWord += parsePdfString(tm[1]);
+        } else if (tm[2] !== undefined) {
+          currentWord += parseHexPdfString(tm[2]);
+        } else if (tm[3] !== undefined) {
+          const num = parseFloat(tm[3]);
+          if (num < -120) currentWord += ' ';
+        }
+      }
+      if (currentWord.trim()) lines.push(currentWord.trim());
+    }
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Fallback parser that inspects every PDF stream, inflates FlateDecode compressed
+ * streams using pako, and extracts text operators without requiring web workers.
+ */
+function extractTextFromPdfStreams(arrayBuffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(arrayBuffer);
+  const streamMarker = [115, 116, 114, 101, 97, 109]; // 'stream'
+  const endMarker = [101, 110, 100, 115, 116, 114, 101, 97, 109]; // 'endstream'
+
+  function indexOfSeq(arr: Uint8Array, seq: number[], start = 0): number {
+    for (let i = start; i <= arr.length - seq.length; i++) {
+      let match = true;
+      for (let j = 0; j < seq.length; j++) {
+        if (arr[i + j] !== seq[j]) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return i;
+    }
+    return -1;
+  }
+
+  const inflateFn = (pako as any).inflate || (pako as any).default?.inflate;
+  const extractedBlocks: string[] = [];
+  let idx = 0;
+
+  while (idx < bytes.length) {
+    const s = indexOfSeq(bytes, streamMarker, idx);
+    if (s === -1) break;
+    let start = s + 6;
+    while (bytes[start] === 10 || bytes[start] === 13) start++;
+    const e = indexOfSeq(bytes, endMarker, start);
+    if (e === -1) break;
+    let end = e;
+    while (bytes[end - 1] === 10 || bytes[end - 1] === 13) end--;
+
+    const slice = bytes.slice(start, end);
+    let streamText = '';
+    try {
+      if (typeof inflateFn === 'function') {
+        const inflated = inflateFn(slice);
+        streamText = new TextDecoder('latin1').decode(inflated);
+      }
+    } catch {
+      try {
+        streamText = new TextDecoder('latin1').decode(slice);
+      } catch {
+        // Ignore unreadable binary
+      }
+    }
+
+    if (streamText && (streamText.includes('BT') || streamText.includes('Tj') || streamText.includes('TJ'))) {
+      const extracted = extractTextFromStreamContent(streamText);
+      if (extracted.trim()) extractedBlocks.push(extracted.trim());
+    }
+    idx = e + 9;
+  }
+
+  return extractedBlocks.join('\n\n');
+}
+
 function extractFallbackPdfText(arrayBuffer: ArrayBuffer): string {
   try {
     const raw = new TextDecoder('latin1').decode(new Uint8Array(arrayBuffer));
@@ -198,13 +347,76 @@ function decodePlainTextBuffer(arrayBuffer: ArrayBuffer): string {
   return utf8;
 }
 
+async function extractViaServer(file: File): Promise<string> {
+  try {
+    let base64 = '';
+    if (typeof FileReader !== 'undefined') {
+      base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const res = (reader.result as string) || '';
+          const commaIndex = res.indexOf(',');
+          resolve(commaIndex !== -1 ? res.slice(commaIndex + 1) : res);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+    } else {
+      const buffer = await file.arrayBuffer();
+      base64 = Buffer.from(buffer).toString('base64');
+    }
+
+    if (!base64) return '';
+
+    const { supabase } = await import('../lib/supabase');
+    const session = supabase ? (await supabase.auth.getSession()).data.session : null;
+
+    const res = await fetch('/api/resume/extract-text', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      },
+      body: JSON.stringify({
+        base64,
+        fileName: file.name,
+        mimeType: file.type,
+      }),
+    });
+
+    if (!res.ok) {
+      console.warn(`[resumeParser] /api/resume/extract-text returned status ${res.status}`);
+      return '';
+    }
+
+    const data = await res.json();
+    if (data.success && typeof data.text === 'string' && data.text.trim().length >= 15) {
+      return data.text.trim();
+    }
+  } catch (err) {
+    console.warn('[resumeParser] Server-side extraction fallback failed:', err);
+  }
+  return '';
+}
+
 export async function extractTextFromFile(file: File): Promise<string> {
   const fileName = file.name.toLowerCase();
   const mimeType = (file.type || '').toLowerCase();
+  const arrayBuffer = await file.arrayBuffer();
 
-  // 1. PDF extraction (pdfjs-dist legacy build + in-process worker handler)
-  if (fileName.endsWith('.pdf') || mimeType === 'application/pdf') {
-    const arrayBuffer = await file.arrayBuffer();
+  // Detect PDF by extension, mime type, or %PDF- magic header
+  const headerBytes = new Uint8Array(arrayBuffer.slice(0, 5));
+  const isPdfHeader =
+    headerBytes.length >= 4 &&
+    headerBytes[0] === 0x25 && // %
+    headerBytes[1] === 0x50 && // P
+    headerBytes[2] === 0x44 && // D
+    headerBytes[3] === 0x46;   // F
+
+  const isPdf = fileName.endsWith('.pdf') || mimeType === 'application/pdf' || isPdfHeader;
+
+  // 1. PDF extraction (pdfjs-dist + robust pako decompressed stream fallback)
+  if (isPdf) {
     try {
       const loadingTask = pdfjsLib.getDocument({
         data: new Uint8Array(arrayBuffer.slice(0)),
@@ -263,17 +475,31 @@ export async function extractTextFromFile(file: File): Promise<string> {
       }
 
       const textContent = pages.join('\n\n');
-      if (textContent.trim().length > 10) {
+      if (textContent.trim().length > 15) {
         return textContent;
       }
     } catch (pdfErr) {
-      console.error('PDF text extraction failed:', pdfErr);
+      console.warn('pdfjs-dist primary extraction failed, using internal stream decompression:', pdfErr);
     }
 
+    // Secondary Strategy: Decompress FlateDecode streams with pako and extract text operators
+    const streamExtracted = extractTextFromPdfStreams(arrayBuffer);
+    if (streamExtracted.trim().length > 15) {
+      return streamExtracted;
+    }
+
+    // Tertiary Strategy: Raw regex literal scan
     const fallbackPdf = extractFallbackPdfText(arrayBuffer);
-    if (fallbackPdf.trim().length > 10) {
+    if (fallbackPdf.trim().length > 15) {
       return fallbackPdf;
     }
+
+    // Quaternary Strategy: Server-side PDF parser & Gemini Multimodal OCR
+    const serverExtracted = await extractViaServer(file);
+    if (serverExtracted.trim().length > 15) {
+      return serverExtracted;
+    }
+
     return '';
   }
 
@@ -343,6 +569,12 @@ export async function extractTextFromFile(file: File): Promise<string> {
       console.error('TXT file text read error:', err);
       return '';
     }
+  }
+
+  // Final universal fallback: server-side extraction (Node pdfjs + Gemini Multimodal OCR)
+  const finalServerAttempt = await extractViaServer(file);
+  if (finalServerAttempt.trim().length >= 15) {
+    return finalServerAttempt;
   }
 
   console.warn(`Unsupported or unreadable file format: ${file.name}`);

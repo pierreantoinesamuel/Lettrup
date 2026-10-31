@@ -37,6 +37,7 @@ import { handleAdminBlogPostsRoute } from './src/infrastructure/routes/adminBlog
 import { handleDeleteAccountRoute } from './src/infrastructure/routes/deleteAccountApi.js';
 import { handleExportAccountRoute } from './src/infrastructure/routes/exportAccountApi.js';
 import { handleAiInvokeRoute, handleAdminAiOversightRoute } from './src/infrastructure/routes/aiEngineApi.js';
+import { handleResumeExtractRoute } from './src/infrastructure/routes/resumeExtractApi.js';
 import { rateLimitMiddleware } from './src/infrastructure/rateLimit/upstashRateLimit.js';
 import { verifySupabaseUser } from './src/infrastructure/auth/verifySupabaseUser.js';
 import { getPublishedBlogPostForSeo, listPublishedBlogPostsForSitemap } from './src/infrastructure/blog/blogSeoRepository.js';
@@ -210,7 +211,7 @@ async function getSeoMetadataForPath(reqPath: string): Promise<RouteSeoMetadata>
             '@type': 'AggregateOffer',
             'priceCurrency': 'EUR',
             'lowPrice': '1.99',
-            'highPrice': '39',
+            'highPrice': '39.99',
             'offerCount': '3'
           }
         }
@@ -589,13 +590,18 @@ async function startServer() {
         ? {
             directives: {
               defaultSrc: ["'self'"],
-              scriptSrc: ["'self'"],
+              // posthog-js lazy-loads its recorder from the EU assets host.
+              scriptSrc: ["'self'", 'https://eu-assets.i.posthog.com'],
+              workerSrc: ["'self'", 'blob:'],
               // index.html loads DM Sans / Fraunces / Space Grotesk from Google Fonts.
               styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
               imgSrc: ["'self'", 'data:', 'https:'],
               fontSrc: ["'self'", 'https://fonts.gstatic.com'],
               connectSrc: [
                 "'self'",
+                // html-to-image fetches the web fonts to embed them in the exported PDF.
+                'https://fonts.googleapis.com',
+                'https://fonts.gstatic.com',
                 'https://*.supabase.co',
                 'https://api.stripe.com',
                 'https://api.resend.com',
@@ -693,6 +699,14 @@ async function startServer() {
   app.post('/api/ai/invoke', rateLimitMiddleware, async (req, res) => {
     const result = await handleAiInvokeRoute(req.body, req.headers.authorization);
     res.status(result.success ? 200 : 400).json(result);
+  });
+
+  // Dedicated resume extraction route (handles digital PDFs, OCR on scanned PDFs, DOCX and text)
+  app.post('/api/resume/extract-text', express.json({ limit: '10mb' }), rateLimitMiddleware, async (req, res) => {
+    // Optional auth verification: logs or attaches user if provided, but does not block parsing
+    await verifySupabaseUser(req.headers.authorization).catch(() => null);
+    const result = await handleResumeExtractRoute(req.body);
+    res.status(result.success ? 200 : 422).json(result);
   });
 
   app.post('/api/learning/resources', rateLimitMiddleware, async (req, res) => {

@@ -17,7 +17,7 @@ const viteEnv: Record<string, string | undefined> =
   (typeof import.meta !== 'undefined' && (import.meta as any).env) || {};
 const nodeEnv: Record<string, string | undefined> = typeof process !== 'undefined' && process.env ? process.env : {};
 
-const FALLBACK_DOMAIN = 'cvpilot.fr';
+const FALLBACK_DOMAIN = 'lettrup.fr';
 
 export const BRAND_NAME = 'Lettrup';
 export const PUBLISHER_NAME = 'Linker Automation Tech';
@@ -34,10 +34,12 @@ export const SITE_URL = `https://${SITE_DOMAIN}`;
 /** Domains the site was reachable on before; kept so old links and portfolio sub-domains keep resolving during a move. */
 export const LEGACY_DOMAINS = ['cvpilot.fr'];
 
+/**
+ * Only two mailboxes, so a single person can follow them:
+ *  - contact: general, privacy (RGPD), partnerships and legal requests
+ *  - support: technical help, billing and subscriptions
+ */
 export const EMAILS = {
   contact: `contact@${SITE_DOMAIN}`,
   support: `support@${SITE_DOMAIN}`,
-  billing: `billing@${SITE_DOMAIN}`,
-  privacy: `privacy@${SITE_DOMAIN}`,
-  partners: `partners@${SITE_DOMAIN}`,
 } as const;

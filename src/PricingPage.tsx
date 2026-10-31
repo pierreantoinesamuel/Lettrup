@@ -125,7 +125,7 @@ export default function PricingPage() {
       technicalName: 'MAX',
       name: 'Excellence Master',
       positioning: 'Accompagnement illimité et coaching carrière complet.',
-      priceMonthly: 39,
+      priceMonthly: 39.99,
       badge: 'Offre ultime',
       isRecommended: false,
       features: [
@@ -429,7 +429,7 @@ export default function PricingPage() {
                 <th className="py-4 px-4 text-xs font-bold text-tertiary text-center bg-primary-container/40 border-x border-tertiary/20">
                   PRO (€9,99)
                 </th>
-                <th className="py-4 px-4 text-xs font-bold text-slate-600 text-center">MAX (€39)</th>
+                <th className="py-4 px-4 text-xs font-bold text-slate-600 text-center">MAX (€39,99)</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-xs">

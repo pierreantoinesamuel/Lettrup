@@ -113,7 +113,7 @@ export default function CookiePolicyPage() {
         <h2>6. Contact</h2>
         <p>
           Pour toute question relative aux cookies, contactez notre équipe à{' '}
-          <a href={`mailto:${EMAILS.privacy}`} className="text-tertiary hover:underline">{EMAILS.privacy}</a>
+          <a href={`mailto:${EMAILS.contact}`} className="text-tertiary hover:underline">{EMAILS.contact}</a>
           .
         </p>
       </section>

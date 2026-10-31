@@ -1,13 +1,16 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
-import { Plus, Trash2, Download, ZoomIn, ZoomOut, Send, Bot, GripVertical, Mail, Phone, MapPin, Link as LinkIcon, User, Upload, Loader2, Linkedin, Github, Car, Camera, X, FileText, File as FileIcon, FileType, Eye, CheckCircle2, Sparkles, LayoutTemplate, Layers, ArrowLeft, Home, ClipboardList } from 'lucide-react';
+import { Plus, Trash2, Download, ZoomIn, ZoomOut, Send, Bot, GripVertical, Mail, Phone, MapPin, Link as LinkIcon, User, Upload, Loader2, Linkedin, Github, Car, Camera, X, FileText, File as FileIcon, FileType, Eye, CheckCircle2, Sparkles, LayoutTemplate, Layers, ArrowLeft, Home, ClipboardList, ShieldCheck } from 'lucide-react';
 import { TEMPLATES_DATA, TemplateItem, MiniCvDocument, sortFeaturedTemplatesFirst } from './TemplatesGallery';
 import { buildSampleResumeDataForTemplate } from './components/dashboard/CompactCvSample';
 import { recommendTemplatesForRole } from './domain/resume-builder/templateRecommendation';
 import { AtsCompatibilityWidget } from './components/AtsCompatibilityWidget';
+import { computeAtsAnalysis } from './lib/atsScoring';
+import { recordCvHistoryEvent, sameCvContent, readCvHistory } from './lib/cvScoreHistory';
+import type { CvHistoryKind } from './lib/cvScoreHistory';
 import { optimizeText, generateSummary, generateBullets, generateResumeSection, parseResumeWithAI, auditResume } from './services/geminiService';
 import { useAuth } from './contexts/AuthContext';
-import { createUserResume, updateUserResume, getUserResumeById, FREE_TIER_CV_LIMIT_ERROR } from './lib/resumeStore';
+import { createUserResume, updateUserResume, getUserResumeById, FREE_TIER_CV_LIMIT_ERROR, PRO_MONTHLY_CV_LIMIT_ERROR } from './lib/resumeStore';
 import { logUserActivity } from './services/analytics';
 import { checkExportEntitlement, consumeExportEntitlement } from './lib/exportApi';
 import ExportPaywallModal from './components/ExportPaywallModal';
@@ -47,7 +50,8 @@ import {
   ResumeSectionId,
   SECTION_LABELS,
 } from './components/resume-preview/ResumePreview';
-import { exportResumeToPdf } from './lib/cvPdfExport';
+import { exportResumeToPdf, planCvPages } from './lib/cvPdfExport';
+import type { CvPageSpec } from './lib/cvPdfExport';
 
 const initialData: ResumeData = {
   coordonnees: {
@@ -208,6 +212,7 @@ export default function ResumeBuilder() {
   // fail again every 900ms) until they either navigate to an existing resume
   // or upgrade.
   const [creationLimitReached, setCreationLimitReached] = useState(false);
+  const [creationLimitMessage, setCreationLimitMessage] = useState('');
 
   // Load resume data for the active id (or reset to a fresh, unsaved resume).
   useEffect(() => {
@@ -254,6 +259,14 @@ export default function ResumeBuilder() {
       if (resume && resume.resumeData) {
         const { _meta, ...cleanResumeData } = resume.resumeData;
         setData({ ...initialData, ...cleanResumeData });
+        if (_meta?.templateId && TEMPLATES[_meta.templateId as TemplateType]) {
+          setTemplate(_meta.templateId as TemplateType);
+        } else if (_meta?.template && TEMPLATES[_meta.template as TemplateType]) {
+          setTemplate(_meta.template as TemplateType);
+        }
+        if (_meta?.layout === 'single' || _meta?.layout === 'double') {
+          setLayout(_meta.layout);
+        }
         loadedIdRef.current = activeId;
       } else {
         loadedIdRef.current = null;
@@ -299,11 +312,12 @@ export default function ResumeBuilder() {
 
       (async () => {
         try {
+          const metaWithTemplate = { templateId: template, layout };
           if (idAtSaveTime) {
             await updateUserResume(idAtSaveTime, userId, {
               name: resumeName,
               jobTitle,
-              resumeData: data,
+              resumeData: { ...data, _meta: metaWithTemplate },
             });
           } else {
             const created = await createUserResume(
@@ -312,12 +326,20 @@ export default function ResumeBuilder() {
                 name: resumeName,
                 type: 'created',
                 jobTitle,
-                resumeData: data,
+                resumeData: { ...data, _meta: metaWithTemplate },
               },
               plan
             );
             currentIdRef.current = created.id;
             loadedIdRef.current = created.id;
+            recordCvHistoryEvent(created.id, userId, {
+              kind: 'create',
+              label: 'CV créé dans l’éditeur',
+              scoreBefore: null,
+              scoreAfter: computeAtsAnalysis(data, initialTemplate).overallScore,
+              before: null,
+              after: data,
+            }).catch((historyError) => console.error('Could not record the CV creation:', historyError));
             setSearchParams((prev) => {
               const next = new URLSearchParams(prev);
               next.set('id', created.id);
@@ -326,6 +348,10 @@ export default function ResumeBuilder() {
           }
         } catch (e: any) {
           if (e?.message === FREE_TIER_CV_LIMIT_ERROR) {
+            setCreationLimitMessage('La formule Gratuite est limitée à 1 CV — ce nouveau CV ne sera pas enregistré. Passez à Pro pour en créer plusieurs.');
+            setCreationLimitReached(true);
+          } else if (e?.message === PRO_MONTHLY_CV_LIMIT_ERROR) {
+            setCreationLimitMessage('Formule Pro : vous avez atteint vos 10 CV créés ce mois-ci — ce nouveau CV ne sera pas enregistré. Passez à Max pour des CV illimités.');
             setCreationLimitReached(true);
           } else {
             console.error('Error autosaving resume:', e);
@@ -356,6 +382,20 @@ export default function ResumeBuilder() {
   const [isExporting, setIsExporting] = useState(false);
   const [isExportPaywallOpen, setIsExportPaywallOpen] = useState(false);
   const [exportPaywallReason, setExportPaywallReason] = useState<'quota_exceeded' | 'no_subscription' | undefined>(undefined);
+  // The exact A4 pages the PDF will contain, shown in the export dialog before downloading.
+  const [exportPreviewPages, setExportPreviewPages] = useState<CvPageSpec[] | null>(null);
+  // Monthly download allowance (Pro: 10, free: 1), read when the dialog opens so the
+  // user is warned before hitting the limit rather than only when blocked by it.
+  const [exportUsage, setExportUsage] = useState<{ used: number; limit: number; usingCredit: boolean } | null>(null);
+  const exportRemaining = exportUsage ? Math.max(0, exportUsage.limit - exportUsage.used) : null;
+  const exportAtsAnalysis = useMemo(() => computeAtsAnalysis(data, template), [data, template]);
+  const exportHistory = useMemo(() => readCvHistory(data), [data]);
+  const initialImportScore = exportHistory.length > 0 && exportHistory[0]?.scoreBefore !== null
+    ? exportHistory[0].scoreBefore
+    : exportHistory.length > 0
+    ? exportHistory[0].scoreAfter
+    : ((data as any)?._meta?.atsScore ?? null);
+  const scoreGain = initialImportScore !== null ? exportAtsAnalysis.overallScore - initialImportScore : null;
   const [mobileTab, setMobileTab] = useState<'all' | 'form' | 'preview' | 'ai'>('all');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -384,6 +424,47 @@ export default function ResumeBuilder() {
   const [sideColumnOrder, setSideColumnOrder] = useState<ResumeSectionId[]>([
     'competences', 'langues', 'interets'
   ]);
+
+  // While the export dialog is open, compute the real A4 pages so the preview
+  // shows what will be downloaded (same planner as the PDF export itself).
+  useEffect(() => {
+    if (!isExportModalOpen) {
+      setExportPreviewPages(null);
+      return;
+    }
+    let cancelled = false;
+    planCvPages({ data, template, layout, singleColumnOrder, mainColumnOrder, sideColumnOrder })
+      .then((pages) => {
+        if (!cancelled) setExportPreviewPages(pages);
+      })
+      .catch((error) => {
+        console.error('Could not plan the export preview pages:', error);
+        if (!cancelled) setExportPreviewPages(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExportModalOpen, data, template, layout, singleColumnOrder, mainColumnOrder, sideColumnOrder]);
+
+  useEffect(() => {
+    // Max is unlimited: nothing to show. Logged-out visitors can't download anyway.
+    if (!isExportModalOpen || !user?.id || user.plan === 'max') {
+      setExportUsage(null);
+      return;
+    }
+    let cancelled = false;
+    checkExportEntitlement('cv').then((result) => {
+      if (cancelled) return;
+      setExportUsage(
+        typeof result.used === 'number' && typeof result.limit === 'number'
+          ? { used: result.used, limit: result.limit, usingCredit: result.source === 'one_time' }
+          : null
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExportModalOpen, user?.id, user?.plan]);
 
   useEffect(() => {
     const customIds = (data.customSections || []).map((section) => section.id);
@@ -663,8 +744,47 @@ export default function ResumeBuilder() {
     }
   };
 
+  // Resolves with the CV once every state update queued so far has been applied:
+  // an AI action sets state several times, so the `data` a handler captured is stale by then.
+  const readLatestData = () =>
+    new Promise<ResumeData>((resolve) => {
+      setData((prev) => {
+        resolve(prev);
+        return prev;
+      });
+    });
+
+  // Runs an AI action and, when it changed the CV, logs the ATS score before and
+  // after (with both versions of the CV) in the scan history.
+  const trackAiAction = async <T,>(kind: CvHistoryKind, label: string, action: () => Promise<T>): Promise<T> => {
+    const before = data;
+    const result = await action();
+    const resumeId = currentIdRef.current;
+    if (resumeId && user?.id) {
+      try {
+        const after = await readLatestData();
+        if (!sameCvContent(before, after)) {
+          await recordCvHistoryEvent(resumeId, user.id, {
+            kind,
+            label,
+            scoreBefore: computeAtsAnalysis(before, template).overallScore,
+            scoreAfter: computeAtsAnalysis(after, template).overallScore,
+            before,
+            after,
+          });
+        }
+      } catch (error) {
+        console.error('Could not record the CV score history:', error);
+      }
+    }
+    return result;
+  };
+
+  const improveWholeResumeWithAI = () =>
+    trackAiAction('ai_rewrite', 'CV réécrit par l’IA (profil et expériences)', rewriteWholeResume);
+
   // Chains the profile + every filled-in experience, using only what's already on the canvas.
-  const improveWholeResumeWithAI = async () => {
+  const rewriteWholeResume = async () => {
     setImprovingAll(true);
     try {
       await improveProfileWithAI();
@@ -686,7 +806,7 @@ export default function ResumeBuilder() {
 
   const handleProfileButtonClick = async () => {
     try {
-      await improveProfileWithAI();
+      await trackAiAction('ai_profile', 'Profil réécrit par l’IA', improveProfileWithAI);
       setMessages(prev => [...prev, { role: 'model', text: "J'ai régénéré votre résumé de profil à partir de votre poste et de votre expérience." }]);
     } catch (error) {
       console.error('Error improving profile:', error);
@@ -696,7 +816,7 @@ export default function ResumeBuilder() {
 
   const handleExperienceButtonClick = async (expId: string) => {
     try {
-      await improveExperienceWithAI(expId);
+      await trackAiAction('ai_experience', 'Expérience réécrite par l’IA', () => improveExperienceWithAI(expId));
       setMessages(prev => [...prev, { role: 'model', text: "J'ai réécrit cette expérience en puces percutantes." }]);
     } catch (error) {
       console.error('Error improving experience:', error);
@@ -706,7 +826,7 @@ export default function ResumeBuilder() {
 
   const handleSkillsButtonClick = async () => {
     try {
-      await improveSkillsWithAI();
+      await trackAiAction('ai_skills', 'Compétences enrichies par l’IA', improveSkillsWithAI);
       setMessages(prev => [...prev, { role: 'model', text: "J'ai enrichi votre rubrique Compétences à partir des informations de votre CV." }]);
     } catch (error) {
       console.error('Error improving skills:', error);
@@ -716,9 +836,8 @@ export default function ResumeBuilder() {
 
   const handleCustomSectionRegenerate = async (section: CustomResumeSection) => {
     try {
-      const { section: updated } = await createOrUpdateCustomSectionWithAI(
-        `Crée une rubrique ${section.title} à partir de mon CV`,
-        section.id
+      const { section: updated } = await trackAiAction('ai_section', `Rubrique « ${section.title} » régénérée par l’IA`, () =>
+        createOrUpdateCustomSectionWithAI(`Crée une rubrique ${section.title} à partir de mon CV`, section.id)
       );
       setMessages(prev => [...prev, { role: 'model', text: `J'ai régénéré le contenu de la rubrique « ${updated.title} » à partir de votre CV.` }]);
     } catch (error) {
@@ -767,7 +886,7 @@ export default function ResumeBuilder() {
         setMessages([...newMessages, { role: 'model', text: `C'est fait ! J'ai réécrit votre profil${count ? ` et ${count} expérience${count > 1 ? 's' : ''}` : ''} à partir des informations déjà présentes dans votre CV.` }]);
       } else if (wantsProfileUpdate) {
         const jobTitle = data.coordonnees.jobTitle || 'Candidat';
-        await improveProfileWithAI();
+        await trackAiAction('ai_profile', 'Profil réécrit par l’IA', improveProfileWithAI);
         setMessages([...newMessages, { role: 'model', text: `J'ai mis à jour le résumé de profil sur votre CV en fonction du poste "${jobTitle}" et de votre expérience.` }]);
       } else if (wantsExperienceUpdate) {
         if (data.experience.length === 0) {
@@ -778,23 +897,28 @@ export default function ResumeBuilder() {
           );
           if (matchingExp || data.experience.length === 1) {
             const targetExp = matchingExp || data.experience[0];
-            await improveExperienceWithAI(targetExp.id);
+            await trackAiAction('ai_experience', 'Expérience réécrite par l’IA', () => improveExperienceWithAI(targetExp.id));
             setMessages([...newMessages, { role: 'model', text: `J'ai réécrit la description de votre expérience chez ${targetExp.company || 'cette entreprise'} en puces percutantes.` }]);
           } else {
-            let improvedCount = 0;
-            for (const exp of data.experience) {
-              if (!exp.company && !exp.jobTitle && !exp.description) continue;
-              await improveExperienceWithAI(exp.id);
-              improvedCount++;
-            }
+            const improvedCount = await trackAiAction('ai_experience', 'Expériences réécrites par l’IA', async () => {
+              let count = 0;
+              for (const exp of data.experience) {
+                if (!exp.company && !exp.jobTitle && !exp.description) continue;
+                await improveExperienceWithAI(exp.id);
+                count++;
+              }
+              return count;
+            });
             setMessages([...newMessages, { role: 'model', text: `J'ai réécrit vos ${improvedCount} expériences professionnelles en puces percutantes.` }]);
           }
         }
       } else if (wantsSkillsUpdate) {
-        await improveSkillsWithAI();
+        await trackAiAction('ai_skills', 'Compétences enrichies par l’IA', improveSkillsWithAI);
         setMessages([...newMessages, { role: 'model', text: `J'ai généré et mis à jour votre rubrique Compétences à partir de votre CV.` }]);
       } else if (wantsSectionCreation) {
-        const { section, isNew } = await createOrUpdateCustomSectionWithAI(userText);
+        const { section, isNew } = await trackAiAction('ai_section', 'Rubrique ajoutée par l’IA', () =>
+          createOrUpdateCustomSectionWithAI(userText)
+        );
         setMessages([
           ...newMessages,
           {
@@ -817,7 +941,7 @@ export default function ResumeBuilder() {
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !user?.id) return;
+    if (!file) return;
 
     setIsImporting(true);
     try {
@@ -826,7 +950,7 @@ export default function ResumeBuilder() {
       const { extractTextFromFile, parseAndBuildResumeData } = await import('./utils/resumeParser');
       const rawText = await extractTextFromFile(file);
       if (!rawText || rawText.trim().length < 15) {
-        alert('Aucun texte lisible n’a été trouvé dans ce fichier. Vérifiez qu’il s’agit d’un PDF contenant du texte, d’un DOCX, d’un DOC ou d’un TXT.');
+        alert("Impossible d'extraire le texte de ce document. S'il s'agit d'un scan ou d'une image, veillez à ce que le texte soit net, ou utilisez un fichier Word (.docx), PDF ou TXT.");
         setIsImporting(false);
         if (e.target) e.target.value = '';
         return;
@@ -839,17 +963,26 @@ export default function ResumeBuilder() {
           return null;
         }),
       ]);
-      const newResumeData: ResumeData = parseAndBuildResumeData(parsedData);
+      const newResumeData: ResumeData = parseAndBuildResumeData(parsedData, data);
 
       // Update current state in builder
       setData(newResumeData);
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 
+      const importScore = computeAtsAnalysis(newResumeData, template).overallScore;
+
+      if (!user?.id) {
+        alert(`CV importé avec succès dans l'éditeur (score ATS : ${importScore}/100) ! Connectez-vous ou créez un compte gratuit pour enregistrer vos modifications.`);
+        return;
+      }
+
       const candidateName = newResumeData.coordonnees?.name || file.name.replace(/\.[^/.]+$/, "");
       const jobTitle = newResumeData.coordonnees?.jobTitle || 'Importé';
       const resumeName = `CV ${candidateName}${jobTitle ? ' - ' + jobTitle : ''}`;
       const meta = {
-        template: 'Fichier Importé',
+        template: TEMPLATE_NAMES[template] || 'Fichier Importé',
+        templateId: template,
+        layout,
         fileName: file.name,
         fileSize: `${Math.round(file.size / 1024)} KB`,
         ...(atsAnalysis ? {
@@ -888,12 +1021,28 @@ export default function ResumeBuilder() {
         }, { replace: true });
       }
 
-      alert(atsAnalysis
-        ? `CV importé, chargé et analysé par l’ATS (score : ${atsAnalysis.atsScore}/100).`
-        : 'CV importé et enregistré, mais l’analyse ATS est indisponible. Rechargez la page pour réessayer.');
+      // Same scorer as the builder widget, so the history, "Mes CV" and the widget agree.
+      if (currentIdRef.current) {
+        try {
+          await recordCvHistoryEvent(currentIdRef.current, user.id, {
+            kind: 'import',
+            label: `CV importé (${file.name})`,
+            scoreBefore: null,
+            scoreAfter: importScore,
+            before: null,
+            after: newResumeData,
+          });
+        } catch (historyError) {
+          console.error('Could not record the import in the score history:', historyError);
+        }
+      }
+
+      alert(`CV importé et analysé par l’ATS (score : ${importScore}/100). Retrouvez-le dans l’Historique des scans.`);
     } catch (error: any) {
       if (error?.message === FREE_TIER_CV_LIMIT_ERROR) {
         alert('Formule Gratuite : 1 CV maximum. Passez à Pro pour importer et enregistrer plusieurs CV.');
+      } else if (error?.message === PRO_MONTHLY_CV_LIMIT_ERROR) {
+        alert('Formule Pro : vous avez atteint vos 10 CV créés ce mois-ci. Passez à Max pour des CV illimités, ou réessayez le mois prochain.');
       } else {
         console.error('Error parsing resume:', error);
         alert('Une erreur est survenue lors de l\'analyse du CV. Veuillez vérifier le fichier.');
@@ -928,6 +1077,16 @@ export default function ResumeBuilder() {
   const performExportDOCX = () => {
     setIsExporting(true);
 
+    const contactParts = [
+      data.coordonnees.email,
+      data.coordonnees.phone,
+      data.coordonnees.location,
+      data.coordonnees.drivingLicense ? `Permis : ${data.coordonnees.drivingLicense}` : '',
+      data.coordonnees.website,
+      data.coordonnees.linkedin,
+      data.coordonnees.github,
+    ].filter(Boolean);
+
     // Create a new Document
     const doc = new Document({
       sections: [{
@@ -937,62 +1096,112 @@ export default function ResumeBuilder() {
             text: data.coordonnees.name,
             heading: HeadingLevel.HEADING_1,
           }),
-          new Paragraph({
-            text: data.coordonnees.jobTitle,
-            heading: HeadingLevel.HEADING_2,
-          }),
-          new Paragraph({
-            text: `${data.coordonnees.email} | ${data.coordonnees.phone} | ${data.coordonnees.location}`,
-          }),
-          new Paragraph({
-            text: "",
-          }),
-          new Paragraph({
-            text: "Profil",
-            heading: HeadingLevel.HEADING_3,
-          }),
-          new Paragraph({
-            text: data.profil,
-          }),
-          new Paragraph({
-            text: "",
-          }),
-          new Paragraph({
-            text: "Expérience",
-            heading: HeadingLevel.HEADING_3,
-          }),
-          ...data.experience.map(exp => [
+          ...(data.coordonnees.jobTitle ? [
             new Paragraph({
-              text: `${exp.jobTitle} at ${exp.company} (${exp.startDate} - ${exp.current ? 'Présent' : exp.endDate})`,
-              heading: HeadingLevel.HEADING_4,
+              text: data.coordonnees.jobTitle,
+              heading: HeadingLevel.HEADING_2,
+            })
+          ] : []),
+          ...(contactParts.length > 0 ? [
+            new Paragraph({
+              text: contactParts.join(' | '),
+            })
+          ] : []),
+          ...(data.profil ? [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: "Profil",
+              heading: HeadingLevel.HEADING_3,
             }),
             new Paragraph({
-              text: exp.description.replace(/<[^>]*>?/gm, ''), // Strip HTML tags for simple text export
+              text: data.profil,
             })
-          ]).flat(),
-          new Paragraph({
-            text: "",
-          }),
-          new Paragraph({
-            text: "Éducation",
-            heading: HeadingLevel.HEADING_3,
-          }),
-          ...data.education.map(edu => [
+          ] : []),
+          ...(data.experience.length > 0 ? [
+            new Paragraph({ text: "" }),
             new Paragraph({
-              text: `${edu.degree} at ${edu.institution} (${edu.date})`,
-              heading: HeadingLevel.HEADING_4,
+              text: "Expérience",
+              heading: HeadingLevel.HEADING_3,
+            }),
+            ...data.experience.map(exp => [
+              new Paragraph({
+                text: `${exp.jobTitle} at ${exp.company} (${exp.startDate} - ${exp.current ? 'Présent' : exp.endDate})${exp.location ? ` - ${exp.location}` : ''}`,
+                heading: HeadingLevel.HEADING_4,
+              }),
+              new Paragraph({
+                text: exp.description.replace(/<[^>]*>?/gm, ''), // Strip HTML tags for simple text export
+              })
+            ]).flat()
+          ] : []),
+          ...(data.projets && data.projets.length > 0 ? [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: "Projets",
+              heading: HeadingLevel.HEADING_3,
+            }),
+            ...data.projets.map(proj => [
+              new Paragraph({
+                text: proj.name,
+                heading: HeadingLevel.HEADING_4,
+              }),
+              new Paragraph({
+                text: proj.description.replace(/<[^>]*>?/gm, ''),
+              })
+            ]).flat()
+          ] : []),
+          ...(data.education.length > 0 ? [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: "Éducation",
+              heading: HeadingLevel.HEADING_3,
+            }),
+            ...data.education.map(edu => [
+              new Paragraph({
+                text: `${edu.degree} at ${edu.institution} (${edu.date})`,
+                heading: HeadingLevel.HEADING_4,
+              })
+            ]).flat()
+          ] : []),
+          ...(data.competences ? [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: "Compétences",
+              heading: HeadingLevel.HEADING_3,
+            }),
+            new Paragraph({
+              text: data.competences,
             })
-          ]).flat(),
-          new Paragraph({
-            text: "",
-          }),
-          new Paragraph({
-            text: "Compétences",
-            heading: HeadingLevel.HEADING_3,
-          }),
-          new Paragraph({
-            text: data.competences,
-          })
+          ] : []),
+          ...(data.langues ? [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: "Langues",
+              heading: HeadingLevel.HEADING_3,
+            }),
+            new Paragraph({
+              text: data.langues,
+            })
+          ] : []),
+          ...(data.interets ? [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: "Centres d'intérêt",
+              heading: HeadingLevel.HEADING_3,
+            }),
+            new Paragraph({
+              text: data.interets,
+            })
+          ] : []),
+          ...((data.customSections || []).flatMap(section => [
+            new Paragraph({ text: "" }),
+            new Paragraph({
+              text: section.title,
+              heading: HeadingLevel.HEADING_3,
+            }),
+            new Paragraph({
+              text: section.content.join('\n'),
+            })
+          ]))
         ],
       }],
     });
@@ -1011,7 +1220,11 @@ export default function ResumeBuilder() {
   // the quota counter and one-time export_entitlements credits are only
   // knowable server-side.
   const attemptExport = async (format: 'pdf' | 'docx') => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      // Without this the button looked dead for anyone not logged in.
+      alert('Connectez-vous pour télécharger votre CV.');
+      return;
+    }
     logUserActivity(user.id, 'cv_download_clicked', { format, cvId: currentIdRef.current });
 
     const isUnlimitedSubscriber = user.plan === 'max';
@@ -1022,6 +1235,12 @@ export default function ResumeBuilder() {
       const result = await checkExportEntitlement('cv');
       entitled = result.entitled;
       usedServerCheck = true;
+      if (result.failed) {
+        // The server could not be reached: say so instead of showing a paywall
+        // that asks the user to pay for something they may already have.
+        alert('Impossible de vérifier vos droits de téléchargement pour le moment. Réessayez dans un instant.');
+        return;
+      }
       if (!entitled) {
         setExportPaywallReason(result.reason);
       }
@@ -1056,14 +1275,36 @@ export default function ResumeBuilder() {
   const handleExportTXT = () => {
     setIsExporting(true);
     let text = `${data.coordonnees.name}\n${data.coordonnees.jobTitle}\n\n`;
-    text += `Contact: ${data.coordonnees.email} | ${data.coordonnees.phone} | ${data.coordonnees.location}\n\n`;
-    text += `Profil:\n${data.profil}\n\n`;
+    const contactParts = [
+      data.coordonnees.email,
+      data.coordonnees.phone,
+      data.coordonnees.location,
+      data.coordonnees.drivingLicense ? `Permis : ${data.coordonnees.drivingLicense}` : '',
+      data.coordonnees.website,
+      data.coordonnees.linkedin,
+      data.coordonnees.github,
+    ].filter(Boolean);
+    if (contactParts.length > 0) {
+      text += `Contact: ${contactParts.join(' | ')}\n\n`;
+    }
+    if (data.profil) {
+      text += `Profil:\n${data.profil}\n\n`;
+    }
     
     if (data.experience.length > 0) {
       text += `Expérience:\n`;
       data.experience.forEach(exp => {
-        text += `- ${exp.jobTitle} at ${exp.company} (${exp.startDate} - ${exp.current ? 'Présent' : exp.endDate})\n`;
+        text += `- ${exp.jobTitle} at ${exp.company} (${exp.startDate} - ${exp.current ? 'Présent' : exp.endDate})${exp.location ? ` - ${exp.location}` : ''}\n`;
         text += `  ${exp.description.replace(/<[^>]*>?/gm, '')}\n`;
+      });
+      text += `\n`;
+    }
+
+    if (data.projets && data.projets.length > 0) {
+      text += `Projets:\n`;
+      data.projets.forEach(proj => {
+        text += `- ${proj.name}\n`;
+        text += `  ${proj.description.replace(/<[^>]*>?/gm, '')}\n`;
       });
       text += `\n`;
     }
@@ -1078,6 +1319,24 @@ export default function ResumeBuilder() {
 
     if (data.competences) {
       text += `Compétences:\n${data.competences}\n\n`;
+    }
+
+    if (data.langues) {
+      text += `Langues:\n${data.langues}\n\n`;
+    }
+
+    if (data.interets) {
+      text += `Centres d'intérêt:\n${data.interets}\n\n`;
+    }
+
+    if (data.customSections && data.customSections.length > 0) {
+      data.customSections.forEach(section => {
+        text += `${section.title}:\n`;
+        section.content.forEach(item => {
+          text += `- ${item}\n`;
+        });
+        text += `\n`;
+      });
     }
 
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
@@ -1106,9 +1365,7 @@ export default function ResumeBuilder() {
 
       {creationLimitReached && (
         <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-4 py-2.5 flex items-center justify-center gap-3 text-xs text-amber-800 text-center">
-          <span>
-            La formule Gratuite est limitée à 1 CV — ce nouveau CV ne sera pas enregistré. Passez à Pro pour en créer plusieurs.
-          </span>
+          <span>{creationLimitMessage}</span>
           <Link to="/pricing" className="font-bold underline underline-offset-2 shrink-0">
             Voir les formules
           </Link>
@@ -1121,17 +1378,21 @@ export default function ResumeBuilder() {
           <div className="bg-white rounded-lg shadow-xl w-full max-w-4xl flex flex-col lg:flex-row overflow-hidden max-h-[90vh]">
             {/* Left: Preview */}
             <div className="w-full lg:w-1/2 bg-gray-100 p-4 sm:p-8 overflow-y-auto flex justify-center items-start min-h-[220px] border-b lg:border-b-0 lg:border-r border-gray-200">
-              <div className="scale-[0.38] sm:scale-[0.45] origin-top">
-                <ResumePreview
-                  id="resume-preview-thumb"
-                  data={data}
-                  template={template}
-                  layout={layout}
-                  singleColumnOrder={singleColumnOrder}
-                  mainColumnOrder={mainColumnOrder}
-                  sideColumnOrder={sideColumnOrder}
-                />
-              </div>
+              {exportPreviewPages ? (
+                // `zoom` (unlike `transform: scale`) shrinks the layout box too, so stacked pages don't leave huge gaps.
+                <div className="flex flex-col items-center gap-3" style={{ zoom: typeof window !== 'undefined' && window.innerWidth < 640 ? 0.38 : 0.45 }}>
+                  {exportPreviewPages.map((page, index) => (
+                    <div key={index} className="shadow-lg">
+                      <ResumePreview id={`resume-preview-thumb-${index}`} {...page.props} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-3 pt-8 text-xs text-gray-500">
+                  <Loader2 className="w-5 h-5 text-gray-500 animate-spin" />
+                  Préparation de l’aperçu…
+                </div>
+              )}
             </div>
 
             {/* Right: Options */}
@@ -1145,7 +1406,93 @@ export default function ResumeBuilder() {
               
               <h2 className="text-xl sm:text-2xl font-bold text-gray-800 mb-2">Télécharger votre CV</h2>
               <p className="text-xs sm:text-sm text-gray-500 mb-6">Choisissez le format qui correspond le mieux à vos besoins.</p>
-              
+
+              {exportUsage && exportRemaining !== null && (
+                <div
+                  role="status"
+                  className={`mb-4 rounded-lg border px-3 py-2 text-xs leading-relaxed ${
+                    exportRemaining === 0
+                      ? 'border-rose-200 bg-rose-50 text-rose-800'
+                      : exportRemaining <= 2
+                      ? 'border-amber-200 bg-amber-50 text-amber-800'
+                      : 'border-gray-200 bg-gray-50 text-gray-600'
+                  }`}
+                >
+                  <p className="font-bold">
+                    {exportUsage.used}/{exportUsage.limit} téléchargements de CV utilisés ce mois-ci
+                  </p>
+                  <p>
+                    {exportRemaining === 0
+                      ? exportUsage.usingCredit
+                        ? 'Quota du mois atteint : ce téléchargement utilisera votre crédit supplémentaire.'
+                        : 'Quota du mois atteint : le prochain téléchargement vous proposera un crédit supplémentaire ou la formule Max (illimitée).'
+                      : exportRemaining <= 2
+                      ? `Plus que ${exportRemaining} téléchargement${exportRemaining > 1 ? 's' : ''} ce mois-ci.`
+                      : 'Votre quota se renouvelle chaque mois.'}
+                  </p>
+                </div>
+              )}
+
+              {/* French Recruitment Market & ATS Benchmark Card */}
+              <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-xs font-black text-slate-900">
+                    <ShieldCheck size={16} className="text-emerald-600" />
+                    <span>Compatibilité Marché France & ATS</span>
+                  </div>
+                  <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${
+                    exportAtsAnalysis.overallScore >= 80 ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                    exportAtsAnalysis.overallScore >= 65 ? 'bg-blue-100 text-blue-800 border border-blue-200' :
+                    'bg-amber-100 text-amber-800 border border-amber-200'
+                  }`}>
+                    {exportAtsAnalysis.overallScore}/100
+                  </span>
+                </div>
+
+                {initialImportScore !== null && scoreGain !== null && scoreGain > 0 ? (
+                  <div className="bg-white p-2.5 rounded-lg border border-slate-200 text-xs flex items-center justify-between shadow-2xs">
+                    <div>
+                      <div className="text-[10px] text-gray-500 font-medium">Progression après optimisation IA</div>
+                      <div className="font-bold text-gray-800 text-xs mt-0.5">
+                        Score initial : <span className="line-through text-gray-400">{initialImportScore}/100</span> ➔ Optimisé : <span className="text-emerald-700 font-extrabold">{exportAtsAnalysis.overallScore}/100</span>
+                      </div>
+                    </div>
+                    <span className="text-xs font-black text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                      +{scoreGain} pts 🚀
+                    </span>
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-gray-600 leading-relaxed">
+                    Évalué selon le référentiel France (Apec, cabinets de recrutement, ATS Workday, Taleo, Welcome to the Jungle).
+                  </p>
+                )}
+
+                <div className="grid grid-cols-2 gap-1.5 text-[10px] text-gray-600 pt-1 border-t border-slate-200/60">
+                  <div className="flex items-center gap-1">
+                    <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+                    <span>Standard 1 page France</span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+                    <span>Intitulés & Format ATS certifiés</span>
+                  </div>
+                </div>
+
+                {exportAtsAnalysis.overallScore < 75 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsExportModalOpen(false);
+                      handleSendMessage('Optimise mon CV selon les critères du marché français (chiffres clés, compétences précises et intitulé de poste).');
+                    }}
+                    className="w-full text-center text-xs font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 py-2 px-3 rounded-lg border border-indigo-200 transition-colors flex items-center justify-center gap-1.5 shadow-2xs"
+                  >
+                    <Sparkles size={13} className="text-indigo-600" />
+                    <span>Optimiser avec l'Agent ATS avant de télécharger</span>
+                  </button>
+                )}
+              </div>
+
               <div className="space-y-3 sm:space-y-4 flex-1">
                 <button 
                   onClick={handleExportPDF}

@@ -45,6 +45,11 @@ export async function checkExportEntitlement(
   entitled: boolean;
   source?: 'subscription' | 'quota' | 'one_time';
   reason?: 'quota_exceeded' | 'no_subscription';
+  /** true when the server could not be asked (down, route missing, error): not the same as "not entitled". */
+  failed?: boolean;
+  /** Downloads used this month and the monthly allowance (absent for unlimited plans). */
+  used?: number;
+  limit?: number;
 }> {
   const headers = await getAuthHeader();
   if (!headers.Authorization) return { entitled: false };
@@ -56,10 +61,10 @@ export async function checkExportEntitlement(
       body: JSON.stringify({ documentType }),
     });
     const data = await res.json();
-    if (!res.ok) return { entitled: false };
-    return { entitled: !!data.entitled, source: data.source, reason: data.reason };
+    if (!res.ok || data.success === false) return { entitled: false, failed: true };
+    return { entitled: !!data.entitled, source: data.source, reason: data.reason, used: data.used, limit: data.limit };
   } catch {
-    return { entitled: false };
+    return { entitled: false, failed: true };
   }
 }
 

@@ -33,7 +33,7 @@ const PLAN_INFO: Record<string, { label: string; description: string; price: str
   max: {
     label: 'MAX — Excellence Master',
     description: 'Tout illimité (CVs & Lettres), Simulateur d\'entretien, Stratégie Carrière & Learning Hub inclus.',
-    price: '39,00 €'
+    price: '39,99 €'
   }
 };
 

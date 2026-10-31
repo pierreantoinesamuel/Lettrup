@@ -13,6 +13,7 @@ import InterviewSimulator from './components/dashboard/InterviewSimulator';
 import LinkedInOptimizer from './components/dashboard/LinkedInOptimizer';
 import PortfolioBuilder from './components/dashboard/PortfolioBuilder';
 import AtsMatchScanner from './components/dashboard/AtsMatchScanner';
+import CvScanHistoryView from './components/dashboard/CvScanHistoryView';
 import UserProfileView from './components/dashboard/UserProfileView';
 import ProfileAnalysisView from './components/dashboard/ProfileAnalysisView';
 import ApplicationPackView from './components/dashboard/ApplicationPackView';
@@ -185,7 +186,7 @@ export default function Dashboard() {
       case 'ats-scanner':
         return <AtsMatchScanner initialSubTab="scan" />;
       case 'scan-history':
-        return <AtsMatchScanner initialSubTab="history" />;
+        return <CvScanHistoryView />;
       case 'templates':
         return <TemplatesGallery inDashboard />;
       case 'profile':

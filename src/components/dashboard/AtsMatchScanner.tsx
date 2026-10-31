@@ -8,7 +8,9 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { supabase } from '../../lib/supabase';
-import { listUserResumes, resumeDataToPlainText, updateUserResumeAtsScore } from '../../lib/resumeStore';
+import { getUserResumeById, listUserResumes, resumeDataToPlainText, updateUserResumeAtsScore } from '../../lib/resumeStore';
+import { computeAtsAnalysis } from '../../lib/atsScoring';
+import { recordCvHistoryEvent, stripMeta } from '../../lib/cvScoreHistory';
 import { saveJobApplication } from '../../services/jobTracker';
 
 export interface ScanHistoryItem {
@@ -255,6 +257,26 @@ export default function AtsMatchScanner({ initialSubTab = 'scan' }: AtsMatchScan
         source: 'ATS Scanner',
       });
       setAddedToTracker(true);
+
+      // The tracker has no notion of which CV was used: remember it on the CV,
+      // so "Historique des scans" shows which job this CV was sent for.
+      try {
+        const resume = selectedCvId ? await getUserResumeById(selectedCvId, user.id) : null;
+        if (resume) {
+          const content = stripMeta(resume.resumeData);
+          await recordCvHistoryEvent(resume.id, user.id, {
+            kind: 'applied',
+            label: 'Candidature enregistrée',
+            scoreBefore: null,
+            scoreAfter: computeAtsAnalysis(content, 'minimalist').overallScore,
+            before: null,
+            after: content,
+            opportunity: { company: companyName || 'Entreprise', role: jobTitle || 'Poste cible' },
+          });
+        }
+      } catch (historyError) {
+        console.error('Could not record the application in the CV history', historyError);
+      }
     } catch (e) {
       console.error('Failed to save application to tracker', e);
     }

@@ -11,9 +11,14 @@ function initPostHog(): void {
 
   posthog.init(POSTHOG_KEY, {
     api_host: POSTHOG_HOST,
+    // Dated defaults turn on pageviews for client-side route changes, which
+    // this SPA needs: without them only the first page load is recorded.
+    defaults: '2026-05-30',
     person_profiles: 'identified_only',
-    capture_pageview: true,
+    capture_pageview: 'history_change',
     autocapture: false,
+    // CVs and cover letters are personal data: never record what users type.
+    session_recording: { maskAllInputs: true },
   });
   initialized = true;
 }

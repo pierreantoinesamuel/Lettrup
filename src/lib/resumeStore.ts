@@ -12,6 +12,8 @@ export interface ResumeMeta {
   fileName?: string;
   fileSize?: string;
   keywordsCount?: number;
+  /** Score history written by cvScoreHistory.ts; opaque here so the store stays independent of it. */
+  history?: unknown;
 }
 
 export interface ResumeListItem {
@@ -19,6 +21,8 @@ export interface ResumeListItem {
   name: string;
   type: 'created' | 'uploaded';
   createdDate: string;
+  /** ISO creation timestamp, for monthly counts (createdDate is display-only). */
+  createdAt: string;
   updatedDate: string;
   template: string;
   atsScore: number;
@@ -80,6 +84,7 @@ function mapRow(row: {
     name: row.name || 'CV sans titre',
     type: row.type === 'uploaded' ? 'uploaded' : 'created',
     createdDate: fmtDate(row.created_at),
+    createdAt: row.created_at || '',
     updatedDate: fmtRelative(row.updated_at || row.created_at),
     template: meta.template || (row.type === 'uploaded' ? 'Fichier Importé' : 'CV en ligne'),
     atsScore: typeof meta.atsScore === 'number' ? meta.atsScore : 0,
@@ -152,6 +157,20 @@ export async function getUserResumeById(id: string, userId: string): Promise<Res
 export const FREE_TIER_CV_LIMIT_ERROR = 'free_tier_cv_limit';
 const FREE_TIER_CV_LIMIT = 1;
 
+// Pro (and the legacy 'plus' alias) can create 10 CVs per calendar month; Max is unlimited.
+// Same calendar-month (UTC) boundary as the download quota in exportEntitlementApi.ts.
+export const PRO_MONTHLY_CV_LIMIT_ERROR = 'pro_monthly_cv_limit';
+export const PRO_MONTHLY_CV_LIMIT = 10;
+
+export function monthlyCvLimitFor(plan: string | null | undefined): number | null {
+  return plan === 'pro' || plan === 'plus' ? PRO_MONTHLY_CV_LIMIT : null;
+}
+
+export function currentMonthStartIso(): string {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+}
+
 function isFreeTierPlan(plan: string | null | undefined): boolean {
   return plan !== 'pro' && plan !== 'plus' && plan !== 'max';
 }
@@ -181,6 +200,18 @@ export async function createUserResume(
 
   if (isFreeTierPlan(plan) && (count ?? 0) >= FREE_TIER_CV_LIMIT) {
     throw new Error(FREE_TIER_CV_LIMIT_ERROR);
+  }
+
+  const monthlyLimit = monthlyCvLimitFor(plan);
+  if (monthlyLimit !== null) {
+    const { count: createdThisMonth } = await supabase
+      .from('user_resumes')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .gte('created_at', currentMonthStartIso());
+    if ((createdThisMonth ?? 0) >= monthlyLimit) {
+      throw new Error(PRO_MONTHLY_CV_LIMIT_ERROR);
+    }
   }
 
   const payload = {
@@ -253,18 +284,19 @@ export async function updateUserResume(
   if (updates.company !== undefined) payload.company = updates.company;
 
   if (updates.resumeData !== undefined) {
-    let meta = updates.meta;
-    if (!meta) {
-      // Preserve the previously stored display meta when this update doesn't touch it
-      // (e.g. a plain content autosave shouldn't wipe out an earlier upload's file info).
-      const { data: current } = await supabase
-        .from('user_resumes')
-        .select('resume_data')
-        .eq('id', id)
-        .eq('user_id', userId)
-        .maybeSingle();
-      meta = (current?.resume_data && current.resume_data._meta) || {};
-    }
+    // Preserve the previously stored display meta when this update doesn't touch it
+    // (e.g. a plain content autosave shouldn't wipe out an earlier upload's file info).
+    const { data: current } = await supabase
+      .from('user_resumes')
+      .select('resume_data')
+      .eq('id', id)
+      .eq('user_id', userId)
+      .maybeSingle();
+    const currentMeta: ResumeMeta = (current?.resume_data && current.resume_data._meta) || {};
+    // A caller-supplied meta (e.g. re-importing over a CV) must not erase the score history.
+    const meta: ResumeMeta = updates.meta
+      ? { ...updates.meta, history: updates.meta.history ?? currentMeta.history }
+      : currentMeta;
     payload.resume_data = { ...updates.resumeData, _meta: meta };
   }
 

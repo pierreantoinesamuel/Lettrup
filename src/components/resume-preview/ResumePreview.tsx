@@ -628,8 +628,11 @@ export const ResumePreview = ({
     return renderClassicCompact();
   }
 
+  const isTwoColumn = (layout === 'double' || t.layoutVariant === 'left-sidebar' || t.layoutVariant === 'two-column') && (showHeader || sideColumnOrder.length > 0);
+  const isOffscreen = id.includes('export') || id.includes('measure');
+
   return (
-    <div id={id} className={`${t.container} leading-normal bg-white shadow-2xl w-[210mm] min-h-[297mm] max-w-[210mm] ${(t.layoutVariant === 'left-sidebar' || t.layoutVariant === 'two-column') ? 'p-0' : 'p-12'} shrink-0 transition-transform origin-top box-border flex flex-col`}>
+    <div id={id} className={`${t.container} leading-normal bg-white ${isOffscreen ? '' : 'shadow-2xl'} w-[210mm] min-h-[297mm] max-w-[210mm] ${(isTwoColumn && (t.layoutVariant === 'left-sidebar' || t.layoutVariant === 'two-column')) ? 'p-0' : 'p-12'} shrink-0 transition-transform origin-top box-border flex flex-col`}>
       {/* Header — Top mode (classic, two-column, and centered variants) */}
       {showHeader && t.layoutVariant !== 'left-sidebar' && (() => {
         const isCentered = template === 'minimalist' || t.headerCentered;
@@ -689,7 +692,7 @@ export const ResumePreview = ({
         );
       })()}
 
-      {(layout === 'double' || t.layoutVariant === 'left-sidebar' || t.layoutVariant === 'two-column') ? (
+      {isTwoColumn ? (
         <div className={`flex min-w-0 flex-1 ${t.layoutVariant === 'left-sidebar' ? 'h-full' : 'gap-8'}`}>
           <div className={`w-1/3 min-w-0 flex flex-col gap-6 ${t.sidebarContainer || ''}`} data-cv-region="sidebar">
             {/* Header — Left sidebar mode only (two-column renders header above) */}

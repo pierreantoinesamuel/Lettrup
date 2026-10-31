@@ -4,7 +4,7 @@
  * Rule: what a user costs in AI calls must never exceed 20% of what they pay
  * for the month. So:
  *   - Pro  (9.99€/month)  -> 2.00€ of AI per month
- *   - Max  (39€/month)    -> 7.80€
+ *   - Max  (39.99€/month) -> 8.00€
  *   - no subscription     -> 20% of the one-time 1.99€ pack = 0.40€, so a
  *     visitor who never pays still costs less than what a single buyer brings.
  *
@@ -22,7 +22,7 @@ export const AI_COST_SHARE = 0.2;
 const PLAN_MONTHLY_PRICE_EUR: Record<string, number> = {
   pro: Number(process.env.PLAN_PRO_PRICE_EUR) || 9.99,
   plus: Number(process.env.PLAN_PRO_PRICE_EUR) || 9.99,
-  max: Number(process.env.PLAN_MAX_PRICE_EUR) || 39,
+  max: Number(process.env.PLAN_MAX_PRICE_EUR) || 39.99,
 };
 
 const ONE_TIME_PACK_PRICE_EUR = Number(process.env.EXPORT_PACK_PRICE_EUR) || 1.99;

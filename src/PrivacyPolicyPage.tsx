@@ -12,7 +12,7 @@ export default function PrivacyPolicyPage() {
           (micro-entreprise française), est responsable du traitement des données
           personnelles collectées via le site et l'application {SITE_DOMAIN}. Pour toute question relative
           à vos données personnelles, vous pouvez nous contacter à l'adresse{' '}
-          <a href={`mailto:${EMAILS.privacy}`} className="text-tertiary hover:underline">{EMAILS.privacy}</a>
+          <a href={`mailto:${EMAILS.contact}`} className="text-tertiary hover:underline">{EMAILS.contact}</a>
           .
         </p>
       </section>
@@ -67,7 +67,7 @@ export default function PrivacyPolicyPage() {
         </ul>
         <p className="mt-2">
           Pour exercer ces droits, contactez-nous à{' '}
-          <a href={`mailto:${EMAILS.privacy}`} className="text-tertiary hover:underline">{EMAILS.privacy}</a>
+          <a href={`mailto:${EMAILS.contact}`} className="text-tertiary hover:underline">{EMAILS.contact}</a>
           . Vous disposez également du droit d'introduire une réclamation auprès de la CNIL (www.cnil.fr).
         </p>
       </section>
@@ -114,7 +114,7 @@ export default function PrivacyPolicyPage() {
           Chacun de ces transferts hors UE est encadré par des clauses contractuelles types (CCT/SCC) adoptées par
           la Commission européenne, ou par un mécanisme d'adéquation équivalent, conformément à l'article 46 du
           RGPD. Vous pouvez demander la liste détaillée de nos sous-traitants et des garanties associées à{' '}
-          <a href={`mailto:${EMAILS.privacy}`} className="text-tertiary hover:underline">{EMAILS.privacy}</a>
+          <a href={`mailto:${EMAILS.contact}`} className="text-tertiary hover:underline">{EMAILS.contact}</a>
           .
         </p>
       </section>

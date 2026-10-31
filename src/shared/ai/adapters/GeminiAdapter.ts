@@ -39,13 +39,29 @@ export class GeminiAdapter extends BaseAIAdapter {
     if (request.maxTokens !== undefined) config.maxOutputTokens = request.maxTokens;
     if (request.responseMimeType) config.responseMimeType = request.responseMimeType;
 
-    const response = await ai.models.generateContent({
-      model: this.model,
-      contents,
-      config: Object.keys(config).length > 0 ? config : undefined,
-    });
+    const candidateModels = [
+      'gemini-3.5-flash-lite',
+      'gemini-3.5-flash',
+      this.model,
+      'gemini-flash-lite-latest',
+    ];
 
-    return response.text || '';
+    let lastError: any = null;
+    for (const model of candidateModels) {
+      try {
+        const response = await ai.models.generateContent({
+          model,
+          contents,
+          config: Object.keys(config).length > 0 ? config : undefined,
+        });
+        return response.text || '';
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[GeminiAdapter] generateContent failed with model ${model}, trying next:`, err?.message || err);
+      }
+    }
+
+    throw lastError || new Error('Failed to generate completion from Gemini models.');
   }
 
   async *executeStream(request: AIRequest): AsyncGenerator<string> {
@@ -61,14 +77,28 @@ export class GeminiAdapter extends BaseAIAdapter {
       contents = `System: ${request.system}\n\nUser Request: ${request.prompt}`;
     }
 
-    const responseStream = await ai.models.generateContentStream({
-      model: this.model,
-      contents,
-    });
+    const candidateModels = [
+      'gemini-3.5-flash-lite',
+      'gemini-3.5-flash',
+      this.model,
+      'gemini-flash-lite-latest',
+    ];
 
-    for await (const chunk of responseStream) {
-      if (chunk.text) {
-        yield chunk.text;
+    for (const model of candidateModels) {
+      try {
+        const responseStream = await ai.models.generateContentStream({
+          model,
+          contents,
+        });
+
+        for await (const chunk of responseStream) {
+          if (chunk.text) {
+            yield chunk.text;
+          }
+        }
+        return;
+      } catch (err: any) {
+        console.warn(`[GeminiAdapter] executeStream failed with model ${model}, trying next:`, err?.message || err);
       }
     }
   }

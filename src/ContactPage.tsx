@@ -6,9 +6,7 @@ import {
   Mail,
   Clock,
   LifeBuoy,
-  CreditCard,
   ShieldCheck,
-  Handshake,
   Send,
   HelpCircle,
 } from 'lucide-react';
@@ -35,28 +33,17 @@ const TOPICS = [
 const CHANNELS = [
   {
     icon: LifeBuoy,
-    title: 'Support technique',
-    description: "Un bug, une question sur l'utilisation de Lettrup ou sur une fonctionnalité.",
+    title: 'Support & facturation',
+    description:
+      "Un bug, une question sur l'utilisation de Lettrup, votre formule, un paiement ou votre facture.",
     email: EMAILS.support,
   },
   {
-    icon: CreditCard,
-    title: 'Facturation & Abonnements',
-    description: 'Questions sur votre formule, un paiement ou votre facture.',
-    email: EMAILS.billing,
-  },
-  {
     icon: ShieldCheck,
-    title: 'RGPD & Confidentialité',
+    title: 'Contact général, RGPD & partenariats',
     description:
-      "Accès, rectification ou suppression de vos données. Vous pouvez aussi exporter ou supprimer votre compte directement depuis Paramètres > Zone de Danger.",
-    email: EMAILS.privacy,
-  },
-  {
-    icon: Handshake,
-    title: 'Partenariats',
-    description: 'Une proposition de partenariat, presse ou intégration.',
-    email: EMAILS.partners,
+      "Accès, rectification ou suppression de vos données, presse, partenariat ou toute autre demande. Vous pouvez aussi exporter ou supprimer votre compte directement depuis Paramètres > Zone de Danger.",
+    email: EMAILS.contact,
   },
 ];
 
