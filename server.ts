@@ -633,12 +633,12 @@ async function startServer() {
     res.status(result.received ? 200 : 400).json(result);
   });
 
-  // Dedicated resume extraction route (handles large base64 PDFs, scans, DOCX up to 25MB).
+  // Dedicated resume extraction route (handles large base64 PDFs, scans, DOCX up to 50MB).
   // MUST be registered BEFORE the global express.json({ limit: '100kb' }) below so
-  // uploads up to 25MB are not rejected by HTTP 413 Payload Too Large.
+  // uploads up to 50MB are not rejected by HTTP 413 Payload Too Large.
   app.post(
     '/api/resume/extract-text',
-    express.json({ limit: '25mb' }),
+    express.json({ limit: '50mb' }),
     rateLimitMiddleware,
     async (req, res) => {
       const user = await verifySupabaseUser(req.headers.authorization).catch(() => null);
