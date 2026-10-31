@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import helmet from 'helmet';
+import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -43,7 +44,7 @@ import { verifySupabaseUser } from './src/infrastructure/auth/verifySupabaseUser
 import { getPublishedBlogPostForSeo, listPublishedBlogPostsForSitemap } from './src/infrastructure/blog/blogSeoRepository.js';
 import { getActiveJobForSeo, listActiveJobsForSitemap } from './src/infrastructure/jobs/jobSeoRepository.js';
 
-import { SITE_DOMAIN } from './src/config/brand.js';
+import { SITE_DOMAIN, LEGACY_DOMAINS } from './src/config/brand.js';
 declare const __dirname: string | undefined;
 
 const currentDirname = typeof __dirname !== 'undefined'
@@ -81,6 +82,10 @@ function escapeHtml(value: unknown): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function stripScriptTags(html: string): string {
+  return html.replace(/<script[\s\S]*?<\/script>/gi, '');
 }
 
 // Escapes JSON destined for a <script type="application/ld+json"> block so
@@ -313,7 +318,7 @@ async function getSeoMetadataForPath(reqPath: string): Promise<RouteSeoMetadata>
           <article>
             <h1>${escapeHtml(post.title)}</h1>
             ${post.subtitle ? `<p>${escapeHtml(post.subtitle)}</p>` : ''}
-            ${post.contentHtml}
+            ${stripScriptTags(post.contentHtml)}
           </article>
         `,
       };
@@ -624,6 +629,29 @@ async function startServer() {
     res.setHeader('Permissions-Policy', 'geolocation=(), camera=(), microphone=()');
     next();
   });
+
+  // HTTPS redirect in production (behind reverse proxy, X-Forwarded-Proto is set).
+  if (isProduction) {
+    app.use((req, res, next) => {
+      if (req.headers['x-forwarded-proto'] === 'http') {
+        res.redirect(301, `https://${req.headers.host}${req.url}`);
+        return;
+      }
+      next();
+    });
+  }
+
+  // CORS: restrict to known origins in production; permissive in dev.
+  const allowedOrigins = isProduction
+    ? [`https://${CANONICAL_HOST}`, ...LEGACY_DOMAINS.map(d => `https://${d}`)]
+    : undefined;
+  app.use(cors({
+    origin: isProduction ? allowedOrigins : true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Stripe-Signature'],
+    maxAge: 86400,
+  }));
 
   // Stripe webhook needs the exact raw request bytes to verify Stripe's
   // signature, so it's registered with express.raw() before the global
@@ -1039,7 +1067,7 @@ Sitemap: ${baseUrl}/sitemap.xml
   });
 
   app.listen(PORT, HOST, () => {
-    console.log(`[Lettrup Server] Express server running on http://${HOST}:${PORT}`);
+    console.info(`[Lettrup Server] Express server running on http://${HOST}:${PORT}`);
   });
 }
 

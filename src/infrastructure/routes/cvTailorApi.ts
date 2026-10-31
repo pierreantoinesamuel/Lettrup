@@ -12,6 +12,7 @@ import nodeHttp from 'http';
 import nodeHttps from 'https';
 import { AdaptCvToJobOfferUseCase, AdaptCvInput } from '../../application/cv-tailoring/AdaptCvToJobOffer';
 import { SupabaseCvRepository } from '../repositories/SupabaseCvRepository';
+import { sanitizeAiJson } from '../../shared/ai/sanitizeAiOutput';
 import { PipelineTask, FullPipelineOutput } from '../../application/cv-tailoring/types';
 
 const MAX_SCRAPES_PER_USER_PER_DAY = 15;
@@ -98,11 +99,11 @@ export async function handleTailorCvRoute(
 
     return {
       success: true,
-      tailoredCv: result.tailoredCv,
-      changeSummary: result.changeSummary,
-      diffPreview: result.diffPreview,
+      tailoredCv: sanitizeAiJson(result.tailoredCv),
+      changeSummary: result.changeSummary?.map(s => sanitizeAiJson(s)),
+      diffPreview: result.diffPreview ? sanitizeAiJson(result.diffPreview) : undefined,
       matchScore: result.matchScore,
-      pipelineResult: result.pipelineResult,
+      pipelineResult: result.pipelineResult ? sanitizeAiJson(result.pipelineResult) : undefined,
     };
   } catch (err: any) {
     return {

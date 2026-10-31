@@ -35,6 +35,9 @@ export default defineConfig(({mode, command}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    esbuild: {
+      drop: mode === 'production' ? ['console', 'debugger'] : [],
+    },
     build: {
       // Only emit sourcemaps when we can actually upload them to Sentry —
       // no point shipping them (or the extra build time) otherwise.

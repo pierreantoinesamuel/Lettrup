@@ -25,6 +25,7 @@ import { salaryAIEngine } from '../../features/salary/infrastructure/ai/SalaryAI
 import { LearningAIAdapter } from '../../features/learning-hub/infrastructure/LearningAIAdapter';
 import { AIProviderRegistry } from '../../shared/ai/AIProviderRegistry';
 import { z } from 'zod';
+import { sanitizeAiJson } from '../../shared/ai/sanitizeAiOutput';
 import { getUserPlan, hasMinimumPlan, AccountPlan } from '../billing/entitlementService';
 
 const learningAIAdapter = new LearningAIAdapter();
@@ -158,7 +159,7 @@ export async function handleAiInvokeRoute(
 
   try {
     const result = await handler(parsedArgs.data as any[]);
-    return { success: true, result };
+    return { success: true, result: sanitizeAiJson(result) };
   } catch (err: any) {
     return { success: false, error: err?.message || "Une erreur est survenue lors de l'appel IA." };
   }
@@ -240,7 +241,7 @@ export async function handleAdminAiOversightRoute(
   try {
     const provider = await AIProviderRegistry.getInstance().getFor('ai-coach');
     const res = await provider.complete({
-      prompt: buildAdminOversightPrompt(reqBody),
+      prompt: buildAdminOversightPrompt(sanitizeAiJson(reqBody)),
       responseMimeType: 'application/json',
     });
 
@@ -249,7 +250,7 @@ export async function handleAdminAiOversightRoute(
     }
 
     const parsed = JSON.parse(res.text);
-    return { success: true, result: parsed };
+    return { success: true, result: sanitizeAiJson(parsed) };
   } catch (err: any) {
     return { success: false, error: err?.message || "L'analyse IA a échoué." };
   }

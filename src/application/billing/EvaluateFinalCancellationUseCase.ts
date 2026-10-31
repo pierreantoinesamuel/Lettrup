@@ -26,7 +26,7 @@ export class EvaluateFinalCancellationUseCase {
 
       // Trigger soft-delete data-retention scheduling per GDPR policy
       // TODO: confirm data retention window - defaulting to 30-day soft-delete before permanent erasure
-      console.log(`[GDPR Data Retention] Account ${input.userId} cancelled on ${updated.cancelledAt}. Scheduled for soft-delete retention window.`);
+      console.info(`[GDPR Data Retention] Account ${input.userId} cancelled on ${updated.cancelledAt}. Scheduled for soft-delete retention window.`);
     }
 
     return updated;

@@ -24,12 +24,6 @@ export class SupabaseJobPostingCacheRepository implements IJobPostingCacheReposi
   }
 
   async save(entry: ParsedJobPosting): Promise<void> {
-    console.log('[Supabase Cache] INSERT INTO job_posting_cache:', {
-      content_hash: entry.contentHash,
-      model_used: entry.modelUsed,
-      keywords_count: entry.extractedKeywords.length,
-      requirements_count: entry.extractedRequirements.length,
-    });
     SupabaseJobPostingCacheRepository.cacheStore.set(entry.contentHash, { ...entry });
   }
 
@@ -38,7 +32,6 @@ export class SupabaseJobPostingCacheRepository implements IJobPostingCacheReposi
     if (cached) {
       cached.hitCount = (cached.hitCount || 0) + 1;
       cached.lastHitAt = new Date().toISOString();
-      console.log(`[Supabase Cache] Updated hit_count=${cached.hitCount} for hash=${hash}`);
     }
   }
 

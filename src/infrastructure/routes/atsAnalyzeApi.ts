@@ -13,6 +13,13 @@
  */
 
 import { atsAIEngine, ATSScanResult } from '../../features/ats-engine/infrastructure/ai/ATSAIEngine';
+import { sanitizeAiJson } from '../../shared/ai/sanitizeAiOutput';
+import { z } from 'zod';
+
+const atsAnalyzeSchema = z.object({
+  jobDescription: z.string().trim().min(20).max(20_000),
+  resumeText: z.string().trim().min(1).max(20_000),
+});
 
 export interface AtsAnalyzeApiRequest {
   jobDescription: string;
@@ -22,5 +29,7 @@ export interface AtsAnalyzeApiRequest {
 export async function handleAtsAnalyzeRoute(
   reqBody: AtsAnalyzeApiRequest
 ): Promise<ATSScanResult> {
-  return atsAIEngine.analyzeJobMatch(reqBody.jobDescription, reqBody.resumeText);
+  const parsed = atsAnalyzeSchema.parse(reqBody);
+  const result = await atsAIEngine.analyzeJobMatch(parsed.jobDescription, parsed.resumeText);
+  return sanitizeAiJson(result);
 }

@@ -18,6 +18,7 @@ import { GenerateApplicationPackUseCase, ApplicationPack } from '../../applicati
 import { scrapeJobPostingUrl, checkUserScrapeLimit } from './cvTailorApi';
 import { getFranceTravailAccessToken } from './franceTravailApi';
 import { sealPack, openPack } from '../security/packToken';
+import { sanitizeAiJson } from '../../shared/ai/sanitizeAiOutput';
 import { reserveAiBudget, finalizeAiRun, cancelAiReservation, nextResetDateLabel } from '../../application/billing/AiBudget';
 import { EntitlementService } from '../../application/billing/EntitlementGate';
 import { TrialLifecycleRepository } from '../repositories/TrialLifecycleRepository';
@@ -226,9 +227,8 @@ export async function handleGenerateApplicationPackRoute(
     }
     if (budget.reservationId) await finalizeAiRun(budget.reservationId, { tokens: useCase.lastEstimatedTokens, success: true, durationMs: Date.now() - startedAt });
 
-    // The browser only ever receives a redacted preview plus an opaque sealed
-    // token; the full pack is released by handleDownloadApplicationPackRoute.
-    return { success: true, pack: redactPack(pack), token: sealPack(callerId, pack), offerSource: offer.source };
+    const cleanPack = sanitizeAiJson(pack);
+    return { success: true, pack: redactPack(cleanPack), token: sealPack(callerId, cleanPack), offerSource: offer.source };
   } catch (err: any) {
     const message = String(err?.message || '');
     if (message.startsWith('PIPELINE_ERROR:not_a_job_posting')) {
