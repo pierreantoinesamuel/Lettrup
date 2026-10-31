@@ -22,7 +22,8 @@ export interface ExtractTextResponse {
 }
 
 export async function handleResumeExtractRoute(
-  body: ExtractTextRequest
+  body: ExtractTextRequest,
+  caller?: { id: string; email: string } | null
 ): Promise<ExtractTextResponse> {
   const { base64, fileName = '', mimeType = '' } = body;
   if (!base64 || typeof base64 !== 'string') {

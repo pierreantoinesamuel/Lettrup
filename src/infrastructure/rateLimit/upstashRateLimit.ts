@@ -7,9 +7,38 @@ import { Redis } from '@upstash/redis';
 // run up real cost, so every one of those routes shares this per-IP limit.
 const MAX_REQUESTS = 20;
 const WINDOW = '60 s';
+const WINDOW_MS = 60 * 1000;
 
 let ratelimit: Ratelimit | null = null;
 let configChecked = false;
+
+// Fallback in-memory sliding window when Redis is offline or unconfigured
+const inMemorySlidingWindow = new Map<string, number[]>();
+
+function checkInMemoryRateLimit(ip: string): RateLimitResult {
+  const now = Date.now();
+  const windowStart = now - WINDOW_MS;
+  const timestamps = (inMemorySlidingWindow.get(ip) || []).filter((t) => t > windowStart);
+
+  if (timestamps.length >= MAX_REQUESTS) {
+    const oldest = timestamps[0] || windowStart;
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldest + WINDOW_MS - now) / 1000));
+    return {
+      allowed: false,
+      limit: MAX_REQUESTS,
+      remaining: 0,
+      retryAfterSeconds,
+    };
+  }
+
+  timestamps.push(now);
+  inMemorySlidingWindow.set(ip, timestamps);
+  return {
+    allowed: true,
+    limit: MAX_REQUESTS,
+    remaining: MAX_REQUESTS - timestamps.length,
+  };
+}
 
 function getRatelimit(): Ratelimit | null {
   if (ratelimit) return ratelimit;
@@ -63,7 +92,7 @@ export interface RateLimitResult {
 export async function checkRateLimit(ip: string): Promise<RateLimitResult> {
   const limiter = getRatelimit();
   if (!limiter) {
-    return { allowed: true };
+    return checkInMemoryRateLimit(ip);
   }
 
   try {
@@ -74,9 +103,9 @@ export async function checkRateLimit(ip: string): Promise<RateLimitResult> {
     }
     return { allowed: true, limit, remaining };
   } catch (err) {
-    // Don't let a Redis outage take the AI routes down with it.
-    console.error('[checkRateLimit] Upstash error, allowing request through:', err);
-    return { allowed: true };
+    // If Redis encounters a network issue, fall back to in-memory sliding window
+    console.error('[checkRateLimit] Upstash error, falling back to in-memory limiter:', err);
+    return checkInMemoryRateLimit(ip);
   }
 }
 

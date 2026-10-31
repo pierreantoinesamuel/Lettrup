@@ -641,8 +641,8 @@ async function startServer() {
     express.json({ limit: '25mb' }),
     rateLimitMiddleware,
     async (req, res) => {
-      await verifySupabaseUser(req.headers.authorization).catch(() => null);
-      const result = await handleResumeExtractRoute(req.body);
+      const user = await verifySupabaseUser(req.headers.authorization).catch(() => null);
+      const result = await handleResumeExtractRoute(req.body, user);
       res.status(result.success ? 200 : 422).json(result);
     }
   );

@@ -134,26 +134,68 @@ function assertSafeIPv4(address: string): void {
   }
 }
 
+function expandIPv6(addr: string): string {
+  let full = addr.toLowerCase().replace(/\.$/, '');
+  if (full.includes('::')) {
+    const [left, right] = full.split('::');
+    const lParts = left ? left.split(':') : [];
+    const rParts = right ? right.split(':') : [];
+    const fill = 8 - lParts.length - rParts.length;
+    full = [...lParts, ...Array(Math.max(fill, 0)).fill('0'), ...rParts].join(':');
+  }
+  return full.split(':').map((g) => g.padStart(4, '0')).join(':');
+}
+
+function extractEmbeddedIPv4(expanded: string): string | null {
+  const groups = expanded.split(':');
+  if (groups.length !== 8) return null;
+  const prefix = groups.slice(0, 6);
+  const hi = parseInt(groups[6], 16);
+  const lo = parseInt(groups[7], 16);
+  const isV4Mapped = prefix.slice(0, 5).every((g) => g === '0000') && prefix[5] === 'ffff';
+  const isV4Compat = prefix.every((g) => g === '0000') && (hi !== 0 || lo !== 0);
+  const isNAT64 = prefix[0] === '0064' && prefix[1] === 'ff9b' && prefix.slice(2).every((g) => g === '0000');
+  if (isV4Mapped || isV4Compat || isNAT64) {
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  }
+  return null;
+}
+
 function assertSafeIPv6(address: string): void {
   const lower = address.toLowerCase();
-  // Loopback, link-local, ULA
-  if (lower === '::1' || lower.startsWith('fe80:') || lower.startsWith('fc') || lower.startsWith('fd')) {
+  const expanded = expandIPv6(lower);
+
+  const embeddedV4 = extractEmbeddedIPv4(expanded);
+  if (embeddedV4) {
+    assertSafeIPv4(embeddedV4);
+    return;
+  }
+
+  const dottedMapped = lower.match(/^[0:]*:?:ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dottedMapped) {
+    assertSafeIPv4(dottedMapped[1]);
+    return;
+  }
+
+  const blocked =
+    lower === '::1' ||
+    lower === '::' ||
+    lower.startsWith('fe80:') ||
+    lower.startsWith('fc') ||
+    lower.startsWith('fd') ||
+    lower.startsWith('ff') ||
+    expanded.startsWith('2001:0db8:') ||
+    expanded.startsWith('2001:0000:') ||
+    expanded.startsWith('2002:') ||
+    expanded.startsWith('0100:0000:0000:0000:');
+
+  if (blocked) {
     throw new Error('L\'URL pointe vers une adresse réseau privée ou réservée (IPv6).');
   }
-  // Unspecified address and multicast (ff00::/8)
-  if (lower === '::' || lower.startsWith('ff')) {
-    throw new Error('L\'URL pointe vers une adresse réseau privée ou réservée (IPv6).');
-  }
-  // IPv4-mapped IPv6 ::ffff:x.x.x.x — extract and validate the embedded IPv4
-  const mapped = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (mapped) {
-    assertSafeIPv4(mapped[1]);
-  }
-  // Same mapping written in hex (::ffff:7f00:1): rebuild the IPv4 and validate it
-  const mappedHex = lower.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex) {
-    const hi = parseInt(mappedHex[1], 16);
-    const lo = parseInt(mappedHex[2], 16);
+
+  if (expanded.startsWith('2002:')) {
+    const hi = parseInt(expanded.split(':')[1], 16);
+    const lo = parseInt(expanded.split(':')[2], 16);
     assertSafeIPv4(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
   }
 }
@@ -186,6 +228,8 @@ async function resolveAndValidateHost(hostname: string): Promise<{ ip: string; f
 
 // Makes a single HTTP/HTTPS request directly to `ip` (no DNS lookup),
 // carrying `hostname` only in the Host header and TLS SNI.
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024; // 2 MB — generous for a job posting page
+
 function requestDirect(
   method: string,
   protocol: 'http:' | 'https:',
@@ -197,10 +241,10 @@ function requestDirect(
   return new Promise((resolve, reject) => {
     const options: nodeHttps.RequestOptions = {
       method,
-      host: ip,          // connect to the validated IP — no second DNS lookup
+      host: ip,
       port,
       path,
-      servername: hostname, // TLS SNI: required for virtual-hosted HTTPS
+      servername: hostname,
       headers: {
         Host: hostname,
         'User-Agent': 'CVPilot-Bot/1.0',
@@ -212,7 +256,16 @@ function requestDirect(
     const lib = protocol === 'https:' ? nodeHttps : nodeHttp;
     const req = lib.request(options, (res) => {
       const chunks: Buffer[] = [];
-      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let totalBytes = 0;
+      res.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_RESPONSE_BYTES) {
+          req.destroy();
+          reject(new Error('La page dépasse la taille maximale autorisée.'));
+          return;
+        }
+        chunks.push(chunk);
+      });
       res.on('end', () =>
         resolve({
           statusCode: res.statusCode ?? 0,
