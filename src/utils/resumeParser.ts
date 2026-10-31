@@ -25,8 +25,12 @@ if (typeof globalThis !== 'undefined') {
 
 if (typeof window !== 'undefined') {
   try {
-    // Avoid cross-origin worker loads that violate CSP default-src 'self'
-    pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+    if (!pdfjsLib.GlobalWorkerOptions.workerSrc) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+        'pdfjs-dist/legacy/build/pdf.worker.min.mjs',
+        import.meta.url
+      ).toString();
+    }
   } catch {
     // Ignore in non-browser environments
   }
@@ -390,9 +394,10 @@ async function extractViaServer(file: File): Promise<string> {
     }
 
     const data = await res.json();
-    if (data.success && typeof data.text === 'string' && data.text.trim().length >= 15) {
+    if (data?.success && typeof data?.text === 'string' && data.text.trim().length >= 10) {
       return data.text.trim();
     }
+    console.warn('[resumeParser] Server extraction unsuccessful:', data);
   } catch (err) {
     console.warn('[resumeParser] Server-side extraction fallback failed:', err);
   }

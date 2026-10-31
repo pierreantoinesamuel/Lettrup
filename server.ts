@@ -633,6 +633,20 @@ async function startServer() {
     res.status(result.received ? 200 : 400).json(result);
   });
 
+  // Dedicated resume extraction route (handles large base64 PDFs, scans, DOCX up to 25MB).
+  // MUST be registered BEFORE the global express.json({ limit: '100kb' }) below so
+  // uploads up to 25MB are not rejected by HTTP 413 Payload Too Large.
+  app.post(
+    '/api/resume/extract-text',
+    express.json({ limit: '25mb' }),
+    rateLimitMiddleware,
+    async (req, res) => {
+      await verifySupabaseUser(req.headers.authorization).catch(() => null);
+      const result = await handleResumeExtractRoute(req.body);
+      res.status(result.success ? 200 : 422).json(result);
+    }
+  );
+
   app.use(express.json({ limit: '100kb' }));
 
   // Liveness probe for the host / uptime monitor. Deliberately dependency-free:
@@ -699,14 +713,6 @@ async function startServer() {
   app.post('/api/ai/invoke', rateLimitMiddleware, async (req, res) => {
     const result = await handleAiInvokeRoute(req.body, req.headers.authorization);
     res.status(result.success ? 200 : 400).json(result);
-  });
-
-  // Dedicated resume extraction route (handles digital PDFs, OCR on scanned PDFs, DOCX and text)
-  app.post('/api/resume/extract-text', express.json({ limit: '10mb' }), rateLimitMiddleware, async (req, res) => {
-    // Optional auth verification: logs or attaches user if provided, but does not block parsing
-    await verifySupabaseUser(req.headers.authorization).catch(() => null);
-    const result = await handleResumeExtractRoute(req.body);
-    res.status(result.success ? 200 : 422).json(result);
   });
 
   app.post('/api/learning/resources', rateLimitMiddleware, async (req, res) => {
