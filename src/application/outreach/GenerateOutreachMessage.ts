@@ -18,9 +18,11 @@ export interface GenerateOutreachOptions {
 }
 
 export class GenerateOutreachMessageUseCase {
-  private entitlementService = new EntitlementService(new TrialLifecycleRepository());
+  private entitlementService: EntitlementService;
 
-  constructor(private aiProviderOverride?: IAIProvider) {}
+  constructor(private aiProviderOverride?: IAIProvider, entitlementService?: EntitlementService) {
+    this.entitlementService = entitlementService || new EntitlementService(new TrialLifecycleRepository());
+  }
 
   async execute(options: GenerateOutreachOptions, callerId: string): Promise<OutreachMessage> {
     const entitlement = await this.entitlementService.checkEntitlement(callerId);

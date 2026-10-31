@@ -14,6 +14,21 @@ import { AdaptCvToJobOfferUseCase, AdaptCvInput } from '../../application/cv-tai
 import { SupabaseCvRepository } from '../repositories/SupabaseCvRepository';
 import { PipelineTask, FullPipelineOutput } from '../../application/cv-tailoring/types';
 
+const MAX_SCRAPES_PER_USER_PER_DAY = 15;
+const scrapeCounters = new Map<string, { count: number; resetAt: number }>();
+
+export function checkUserScrapeLimit(userId: string): boolean {
+  const now = Date.now();
+  const entry = scrapeCounters.get(userId);
+  if (!entry || now > entry.resetAt) {
+    scrapeCounters.set(userId, { count: 1, resetAt: now + 86_400_000 });
+    return true;
+  }
+  if (entry.count >= MAX_SCRAPES_PER_USER_PER_DAY) return false;
+  entry.count++;
+  return true;
+}
+
 export interface TailorCvApiRequest {
   cvId: string;
   jobOfferText?: string;
@@ -59,6 +74,9 @@ export async function handleTailorCvRoute(
     let sourceUrl = reqBody.jobPostingUrl;
 
     if (!jobOfferText && reqBody.jobPostingUrl) {
+      if (!checkUserScrapeLimit(callerId)) {
+        return { success: false, error: 'Limite de récupération d\'URL atteinte pour aujourd\'hui. Collez le texte de l\'offre à la place.' };
+      }
       jobOfferText = await scrapeJobPostingUrl(reqBody.jobPostingUrl);
     }
 

@@ -1,10 +1,20 @@
 import { GenerateOutreachMessageUseCase } from './GenerateOutreachMessage';
 import { IAIProvider } from '../../shared/ai/IAIProvider';
 import { AIRequest, AIResponse } from '../../shared/ai/types';
+import { EntitlementService } from '../billing/EntitlementGate';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
     throw new Error(`[TEST FAILED] ${message}`);
+  }
+}
+
+class MockEntitlementService extends EntitlementService {
+  constructor() {
+    super({} as any);
+  }
+  override async checkEntitlement(): Promise<{ allowed: boolean }> {
+    return { allowed: true };
   }
 }
 
@@ -41,7 +51,8 @@ export function runOutreachApplicationTests() {
     // Test 1: Outreach application generates message and enforces 300 char limit on connection note
     testCount++;
     const mockAi = new MockOutreachAIProvider();
-    const useCase = new GenerateOutreachMessageUseCase(mockAi);
+    const mockEntitlement = new MockEntitlementService();
+    const useCase = new GenerateOutreachMessageUseCase(mockAi, mockEntitlement);
 
     const result = await useCase.execute({
       cvSummary: 'Développeur Full Stack 6 ans XP, React, Node.js',

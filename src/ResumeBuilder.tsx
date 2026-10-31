@@ -1039,10 +1039,12 @@ export default function ResumeBuilder() {
 
       alert(`CV importé et analysé par l’ATS (score : ${importScore}/100). Retrouvez-le dans l’Historique des scans.`);
     } catch (error: any) {
-      if (error?.message === FREE_TIER_CV_LIMIT_ERROR) {
+      if (error?.message === FREE_TIER_CV_LIMIT_ERROR || error?.message?.includes('Free tier quota')) {
         alert('Formule Gratuite : 1 CV maximum. Passez à Pro pour importer et enregistrer plusieurs CV.');
-      } else if (error?.message === PRO_MONTHLY_CV_LIMIT_ERROR) {
+      } else if (error?.message === PRO_MONTHLY_CV_LIMIT_ERROR || error?.message?.includes('Monthly Pro quota')) {
         alert('Formule Pro : vous avez atteint vos 10 CV créés ce mois-ci. Passez à Max pour des CV illimités, ou réessayez le mois prochain.');
+      } else if (error?.message) {
+        alert(error.message);
       } else {
         console.error('Error parsing resume:', error);
         alert('Une erreur est survenue lors de l\'analyse du CV. Veuillez vérifier le fichier.');

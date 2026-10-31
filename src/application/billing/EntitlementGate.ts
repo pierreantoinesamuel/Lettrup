@@ -33,8 +33,7 @@ export class EntitlementService {
   async checkEntitlement(userId: string): Promise<EntitlementCheckResult> {
     const lifecycle = await this.repo.getByUserId(userId);
     if (!lifecycle) {
-      // Default for users prior to trial tracking system: allowed
-      return { allowed: true };
+      return { allowed: false, reason: 'not_found' };
     }
     return evaluateEntitlement(lifecycle.state);
   }

@@ -15,10 +15,10 @@
 
 import { SupabaseCvRepository } from '../repositories/SupabaseCvRepository';
 import { GenerateApplicationPackUseCase, ApplicationPack } from '../../application/application-pack/GenerateApplicationPack';
-import { scrapeJobPostingUrl } from './cvTailorApi';
+import { scrapeJobPostingUrl, checkUserScrapeLimit } from './cvTailorApi';
 import { getFranceTravailAccessToken } from './franceTravailApi';
 import { sealPack, openPack } from '../security/packToken';
-import { checkAiBudget, recordAiRun, nextResetDateLabel } from '../../application/billing/AiBudget';
+import { reserveAiBudget, finalizeAiRun, cancelAiReservation, nextResetDateLabel } from '../../application/billing/AiBudget';
 import { EntitlementService } from '../../application/billing/EntitlementGate';
 import { TrialLifecycleRepository } from '../repositories/TrialLifecycleRepository';
 import { handleCheckExportEntitlementRoute, handleConsumeExportEntitlementRoute } from './exportEntitlementApi';
@@ -75,12 +75,16 @@ function hostOf(url: URL): string {
   return url.hostname.toLowerCase();
 }
 
+const JOB_SIGNALS_FR = ['poste', 'contrat', 'cdi', 'cdd', 'candidature', 'expérience', 'compétences', 'missions', 'profil recherché', 'rémunération', 'salaire', 'recrutement', 'postuler'];
+const JOB_SIGNALS_EN = ['position', 'contract', 'apply', 'requirements', 'qualifications', 'salary', 'experience', 'responsibilities', 'we are looking'];
+
 function looksLikeRealOffer(text: string): boolean {
   if (text.length < MIN_OFFER_CHARS) return false;
   const lower = text.toLowerCase();
   const wallHits = WALL_MARKERS.filter((marker) => lower.includes(marker)).length;
-  // A genuine offer is long; a login/anti-bot wall is short and full of markers.
-  return !(wallHits >= 1 && text.length < 1500);
+  if (wallHits >= 1 && text.length < 1500) return false;
+  const jobHits = [...JOB_SIGNALS_FR, ...JOB_SIGNALS_EN].filter((s) => lower.includes(s)).length;
+  return jobHits >= 2;
 }
 
 function extractFranceTravailOfferId(url: URL): string | null {
@@ -123,7 +127,8 @@ async function fetchFranceTravailOfferText(offerId: string): Promise<string | nu
 }
 
 async function resolveOffer(
-  req: GenerateApplicationPackApiRequest
+  req: GenerateApplicationPackApiRequest,
+  callerId: string
 ): Promise<{ text: string; source: NonNullable<GenerateApplicationPackApiResponse['offerSource']> } | null> {
   const pasted = (req.jobOfferText || '').trim();
   if (pasted.length >= MIN_OFFER_CHARS) {
@@ -155,6 +160,8 @@ async function resolveOffer(
     }
     return null;
   }
+
+  if (!checkUserScrapeLimit(callerId)) return null;
 
   try {
     const text = await scrapeJobPostingUrl(url.toString());
@@ -191,13 +198,12 @@ export async function handleGenerateApplicationPackRoute(
       return { success: false, code: 'cv_not_found', error: 'CV introuvable ou accès refusé.' };
     }
 
-    const offer = await resolveOffer(reqBody);
+    const offer = await resolveOffer(reqBody, callerId);
     if (!offer) {
       return { success: false, code: 'offer_unreadable', error: UNREADABLE_MESSAGE };
     }
 
-    // Monthly AI budget: a user's AI cost must stay under 20% of what they pay.
-    const budget = await checkAiBudget(callerId, EXPECTED_PACK_TOKENS);
+    const budget = await reserveAiBudget(callerId, EXPECTED_PACK_TOKENS, 'application_pack', reqBody.cvId);
     if (!budget.allowed) {
       const subscriber = budget.plan === 'pro' || budget.plan === 'plus' || budget.plan === 'max';
       return {
@@ -215,10 +221,10 @@ export async function handleGenerateApplicationPackRoute(
     try {
       pack = await useCase.execute({ jobOfferText: offer.text, masterCv: baseCv.data });
     } catch (err: any) {
-      await recordAiRun({ userId: callerId, cvId: reqBody.cvId, task: 'application_pack', tokens: useCase.lastEstimatedTokens, success: false, durationMs: Date.now() - startedAt, error: String(err?.message || '').slice(0, 200) });
+      if (budget.reservationId) await finalizeAiRun(budget.reservationId, { tokens: useCase.lastEstimatedTokens, success: false, durationMs: Date.now() - startedAt, error: String(err?.message || '').slice(0, 200) });
       throw err;
     }
-    await recordAiRun({ userId: callerId, cvId: reqBody.cvId, task: 'application_pack', tokens: useCase.lastEstimatedTokens, success: true, durationMs: Date.now() - startedAt });
+    if (budget.reservationId) await finalizeAiRun(budget.reservationId, { tokens: useCase.lastEstimatedTokens, success: true, durationMs: Date.now() - startedAt });
 
     // The browser only ever receives a redacted preview plus an opaque sealed
     // token; the full pack is released by handleDownloadApplicationPackRoute.

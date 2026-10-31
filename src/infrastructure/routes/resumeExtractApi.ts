@@ -18,6 +18,7 @@ export interface ExtractTextResponse {
   success: boolean;
   text?: string;
   source?: 'pdfjs' | 'gemini_ocr' | 'mammoth' | 'plaintext';
+  code?: 'AUTH_REQUIRED_FOR_OCR' | 'PAYLOAD_TOO_LARGE' | 'INVALID_PAYLOAD';
   error?: string;
 }
 
@@ -27,12 +28,20 @@ export async function handleResumeExtractRoute(
 ): Promise<ExtractTextResponse> {
   const { base64, fileName = '', mimeType = '' } = body;
   if (!base64 || typeof base64 !== 'string') {
-    return { success: false, error: 'Fichier manquant ou invalide.' };
+    return { success: false, code: 'INVALID_PAYLOAD', error: 'Fichier manquant ou invalide.' };
+  }
+
+  // Pre-allocation / stream memory bloat guard (max ~40MB binary, base64 ~55MB)
+  if (base64.length > 58 * 1024 * 1024) {
+    return { success: false, code: 'PAYLOAD_TOO_LARGE', error: 'Le fichier dépasse la taille maximale autorisée (40 Mo).' };
   }
 
   const buffer = Buffer.from(base64, 'base64');
   if (buffer.length === 0) {
-    return { success: false, error: 'Fichier vide.' };
+    return { success: false, code: 'INVALID_PAYLOAD', error: 'Fichier vide.' };
+  }
+  if (buffer.length > 40 * 1024 * 1024) {
+    return { success: false, code: 'PAYLOAD_TOO_LARGE', error: 'Le fichier dépasse la taille maximale autorisée (40 Mo).' };
   }
 
   const nameLower = fileName.toLowerCase();
@@ -104,6 +113,16 @@ export async function handleResumeExtractRoute(
     }
 
     // 2. Second attempt: Scanned PDF or rasterized pages -> Gemini Multimodal OCR
+    // Financial DoS & AI Quota Exhaustion Guard: Multimodal OCR consumes billed tokens.
+    // Require verified authentication so unauthenticated attackers cannot drain Gemini API credits.
+    if (!caller) {
+      return {
+        success: false,
+        code: 'AUTH_REQUIRED_FOR_OCR',
+        error: "Ce document PDF ne contient aucune couche de texte lisible et nécessite une reconnaissance visuelle par IA. Veuillez vous connecter ou créer un compte gratuit pour l'importer.",
+      };
+    }
+
     const apiKey = process.env.GEMINI_API_KEY;
     if (apiKey) {
       const candidateModels = [
@@ -164,6 +183,15 @@ Ne résume pas. Rends le texte intégralement sous forme de texte brut structur�
     nameLower.endsWith('.webp');
 
   if (isImage) {
+    // Financial DoS Guard: Image OCR requires authenticated session
+    if (!caller) {
+      return {
+        success: false,
+        code: 'AUTH_REQUIRED_FOR_OCR',
+        error: "L'analyse d'un CV au format image (PNG, JPG) par reconnaissance visuelle nécessite d'être connecté à votre compte.",
+      };
+    }
+
     const apiKey = process.env.GEMINI_API_KEY;
     if (apiKey) {
       const candidateModels = [

@@ -67,14 +67,25 @@ async function extractTextFromDocxZip(arrayBuffer: ArrayBuffer): Promise<string>
   try {
     const zip = await JSZip.loadAsync(arrayBuffer);
     const fileNames = Object.keys(zip.files);
+    // Decompression bomb defense: cap file count and target word XML parts
+    if (fileNames.length > 500) {
+      console.warn('[resumeParser] DOCX zip contains excessive file entries, aborting decompression.');
+      return '';
+    }
+
     const orderedXmlPaths = [
       ...fileNames.filter((name) => /^word\/header\d*\.xml$/i.test(name)).sort(),
       ...fileNames.filter((name) => /^word\/document\.xml$/i.test(name)),
       ...fileNames.filter((name) => /^word\/footer\d*\.xml$/i.test(name)).sort(),
-    ];
+    ].slice(0, 50);
+
+    let totalXmlBytes = 0;
+    const MAX_DOCX_UNCOMPRESSED_BYTES = 10 * 1024 * 1024; // 10MB
     const parts: string[] = [];
     for (const xmlPath of orderedXmlPaths) {
+      if (totalXmlBytes > MAX_DOCX_UNCOMPRESSED_BYTES) break;
       const xml = await zip.files[xmlPath].async('string');
+      totalXmlBytes += xml.length;
       const extracted = extractTextFromWordXml(xml);
       if (extracted) parts.push(extracted);
     }
@@ -257,11 +268,16 @@ function extractTextFromStreamContent(streamContent: string): string {
 /**
  * Fallback parser that inspects every PDF stream, inflates FlateDecode compressed
  * streams using pako, and extracts text operators without requiring web workers.
+ * Includes decompression bomb safeguards (stream count limit, size limit).
  */
 function extractTextFromPdfStreams(arrayBuffer: ArrayBuffer): string {
   const bytes = new Uint8Array(arrayBuffer);
   const streamMarker = [115, 116, 114, 101, 97, 109]; // 'stream'
   const endMarker = [101, 110, 100, 115, 116, 114, 101, 97, 109]; // 'endstream'
+
+  const MAX_STREAMS = 150;
+  const MAX_DECOMPRESSED_BYTES_PER_STREAM = 2 * 1024 * 1024; // 2 MB
+  const MAX_TOTAL_DECOMPRESSED_BYTES = 10 * 1024 * 1024; // 10 MB
 
   function indexOfSeq(arr: Uint8Array, seq: number[], start = 0): number {
     for (let i = start; i <= arr.length - seq.length; i++) {
@@ -280,8 +296,10 @@ function extractTextFromPdfStreams(arrayBuffer: ArrayBuffer): string {
   const inflateFn = (pako as any).inflate || (pako as any).default?.inflate;
   const extractedBlocks: string[] = [];
   let idx = 0;
+  let streamCount = 0;
+  let totalDecompressedBytes = 0;
 
-  while (idx < bytes.length) {
+  while (idx < bytes.length && streamCount < MAX_STREAMS && totalDecompressedBytes < MAX_TOTAL_DECOMPRESSED_BYTES) {
     const s = indexOfSeq(bytes, streamMarker, idx);
     if (s === -1) break;
     let start = s + 6;
@@ -291,18 +309,26 @@ function extractTextFromPdfStreams(arrayBuffer: ArrayBuffer): string {
     let end = e;
     while (bytes[end - 1] === 10 || bytes[end - 1] === 13) end--;
 
+    streamCount++;
     const slice = bytes.slice(start, end);
     let streamText = '';
-    try {
-      if (typeof inflateFn === 'function') {
-        const inflated = inflateFn(slice);
-        streamText = new TextDecoder('latin1').decode(inflated);
-      }
-    } catch {
+
+    // Ignore oversized raw streams to protect against decompression explosion
+    if (slice.length > 0 && slice.length < 5 * 1024 * 1024) {
       try {
-        streamText = new TextDecoder('latin1').decode(slice);
+        if (typeof inflateFn === 'function') {
+          const inflated = inflateFn(slice);
+          if (inflated && inflated.length <= MAX_DECOMPRESSED_BYTES_PER_STREAM) {
+            totalDecompressedBytes += inflated.length;
+            streamText = new TextDecoder('latin1').decode(inflated);
+          }
+        }
       } catch {
-        // Ignore unreadable binary
+        try {
+          streamText = new TextDecoder('latin1').decode(slice);
+        } catch {
+          // Ignore unreadable binary
+        }
       }
     }
 
@@ -388,17 +414,28 @@ async function extractViaServer(file: File): Promise<string> {
       }),
     });
 
+    const data = await res.json().catch(() => null);
+
+    if (res.status === 401 || data?.code === 'AUTH_REQUIRED_FOR_OCR') {
+      throw new Error(data?.error || "L'analyse par OCR d'un CV scanné ou image nécessite de vous connecter à votre compte.");
+    }
+    if (res.status === 413 || data?.code === 'PAYLOAD_TOO_LARGE') {
+      throw new Error(data?.error || "Le fichier est trop volumineux pour être analysé (limite 40 Mo).");
+    }
+
     if (!res.ok) {
       console.warn(`[resumeParser] /api/resume/extract-text returned status ${res.status}`);
       return '';
     }
 
-    const data = await res.json();
     if (data?.success && typeof data?.text === 'string' && data.text.trim().length >= 10) {
       return data.text.trim();
     }
     console.warn('[resumeParser] Server extraction unsuccessful:', data);
   } catch (err) {
+    if (err instanceof Error && (err.message.includes('OCR') || err.message.includes('volumineux'))) {
+      throw err;
+    }
     console.warn('[resumeParser] Server-side extraction fallback failed:', err);
   }
   return '';

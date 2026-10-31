@@ -38,7 +38,7 @@ import { handleDeleteAccountRoute } from './src/infrastructure/routes/deleteAcco
 import { handleExportAccountRoute } from './src/infrastructure/routes/exportAccountApi.js';
 import { handleAiInvokeRoute, handleAdminAiOversightRoute } from './src/infrastructure/routes/aiEngineApi.js';
 import { handleResumeExtractRoute } from './src/infrastructure/routes/resumeExtractApi.js';
-import { rateLimitMiddleware } from './src/infrastructure/rateLimit/upstashRateLimit.js';
+import { rateLimitMiddleware, checkUserAiRateLimit } from './src/infrastructure/rateLimit/upstashRateLimit.js';
 import { verifySupabaseUser } from './src/infrastructure/auth/verifySupabaseUser.js';
 import { getPublishedBlogPostForSeo, listPublishedBlogPostsForSitemap } from './src/infrastructure/blog/blogSeoRepository.js';
 import { getActiveJobForSeo, listActiveJobsForSitemap } from './src/infrastructure/jobs/jobSeoRepository.js';
@@ -643,7 +643,14 @@ async function startServer() {
     async (req, res) => {
       const user = await verifySupabaseUser(req.headers.authorization).catch(() => null);
       const result = await handleResumeExtractRoute(req.body, user);
-      res.status(result.success ? 200 : 422).json(result);
+      const statusCode = result.success
+        ? 200
+        : result.code === 'AUTH_REQUIRED_FOR_OCR'
+          ? 401
+          : result.code === 'PAYLOAD_TOO_LARGE'
+            ? 413
+            : 422;
+      res.status(statusCode).json(result);
     }
   );
 
@@ -663,6 +670,8 @@ async function startServer() {
   app.post('/api/cv/tailor', rateLimitMiddleware, async (req, res) => {
     const user = await requireAuth(req, res);
     if (!user) return;
+    const userLimit = await checkUserAiRateLimit(user.id);
+    if (!userLimit.allowed) { res.status(429).json({ error: 'Trop de générations. Réessayez dans une heure.' }); return; }
     const result = await handleTailorCvRoute(req.body, user.id);
     res.json(result);
   });
@@ -670,6 +679,8 @@ async function startServer() {
   app.post('/api/application-pack/generate', rateLimitMiddleware, async (req, res) => {
     const user = await requireAuth(req, res);
     if (!user) return;
+    const userLimit = await checkUserAiRateLimit(user.id);
+    if (!userLimit.allowed) { res.status(429).json({ error: 'Trop de générations. Réessayez dans une heure.' }); return; }
     const result = await handleGenerateApplicationPackRoute(req.body, user.id);
     res.status(result.success ? 200 : 422).json(result);
   });
@@ -684,12 +695,17 @@ async function startServer() {
   app.post('/api/ats/scan', rateLimitMiddleware, async (req, res) => {
     const user = await requireAuth(req, res);
     if (!user) return;
+    const userLimit = await checkUserAiRateLimit(user.id);
+    if (!userLimit.allowed) { res.status(429).json({ error: 'Trop de générations. Réessayez dans une heure.' }); return; }
     const result = await handleAtsScanRoute(req.body, user.id);
     res.status(result.success ? 200 : 422).json(result);
   });
 
   app.post('/api/ats/analyze', rateLimitMiddleware, async (req, res) => {
-    if (!(await requireAuth(req, res))) return;
+    const user = await requireAuth(req, res);
+    if (!user) return;
+    const userLimit = await checkUserAiRateLimit(user.id);
+    if (!userLimit.allowed) { res.status(429).json({ error: 'Trop de générations. Réessayez dans une heure.' }); return; }
     try {
       const result = await handleAtsAnalyzeRoute(req.body);
       res.json(result);
@@ -701,6 +717,8 @@ async function startServer() {
   app.post('/api/outreach/generate', rateLimitMiddleware, async (req, res) => {
     const user = await requireAuth(req, res);
     if (!user) return;
+    const userLimit = await checkUserAiRateLimit(user.id);
+    if (!userLimit.allowed) { res.status(429).json({ error: 'Trop de générations. Réessayez dans une heure.' }); return; }
     const result = await handleGenerateOutreachRoute(req.body, user.id);
     res.json(result);
   });

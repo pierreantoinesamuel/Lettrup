@@ -77,10 +77,41 @@ async function spentThisMonthEur(userId: string): Promise<number> {
 }
 
 /**
- * Checks whether a run expected to use `expectedTokens` still fits in the
- * user's budget for the month. Fails closed: if the spend can't be read, the
- * run is refused rather than allowed unmetered.
+ * Atomically reserves budget by inserting a pending row BEFORE checking,
+ * so concurrent requests see each other's reservations (prevents TOCTOU race).
  */
+export async function reserveAiBudget(userId: string, expectedTokens: number, task: string, cvId?: string): Promise<AiBudgetStatus & { reservationId?: string }> {
+  const plan = await getUserPlan(userId).catch(() => null);
+  const budgetEur = monthlyBudgetEur(plan);
+  const neededEur = tokensToEur(expectedTokens);
+  try {
+    const db = getSupabaseAdminClient();
+    const { data: row, error: insertErr } = await db.from('pipeline_runs').insert({
+      user_id: userId,
+      cv_id: cvId ?? null,
+      task,
+      tokens_used: Math.round(expectedTokens),
+      success: false,
+      duration_ms: 0,
+      error: 'pending_reservation',
+    }).select('id').single();
+    if (insertErr || !row) {
+      console.error('[AiBudget] Failed to insert reservation:', insertErr?.message);
+      return { allowed: false, plan, budgetEur, spentEur: budgetEur, neededEur };
+    }
+    const spentEur = await spentThisMonthEur(userId);
+    if (spentEur > budgetEur) {
+      await db.from('pipeline_runs').delete().eq('id', row.id);
+      return { allowed: false, plan, budgetEur, spentEur, neededEur };
+    }
+    return { allowed: true, plan, budgetEur, spentEur, neededEur, reservationId: row.id };
+  } catch (err: any) {
+    console.error('[AiBudget] Could not reserve budget:', err?.message);
+    return { allowed: false, plan, budgetEur, spentEur: budgetEur, neededEur };
+  }
+}
+
+/** @deprecated Use reserveAiBudget + finalizeAiRun instead. Kept for callers not yet migrated. */
 export async function checkAiBudget(userId: string, expectedTokens: number): Promise<AiBudgetStatus> {
   const plan = await getUserPlan(userId).catch(() => null);
   const budgetEur = monthlyBudgetEur(plan);
@@ -94,15 +125,26 @@ export async function checkAiBudget(userId: string, expectedTokens: number): Pro
   }
 }
 
-/** Records one AI run so the next budget check sees it. Failures are logged loudly: a missed row means unmetered spend. */
+export async function finalizeAiRun(reservationId: string, actual: {
+  tokens: number; success: boolean; durationMs: number; error?: string;
+}): Promise<void> {
+  const { error } = await getSupabaseAdminClient().from('pipeline_runs').update({
+    tokens_used: Math.round(actual.tokens),
+    success: actual.success,
+    duration_ms: Math.round(actual.durationMs),
+    error: actual.error ?? null,
+  }).eq('id', reservationId);
+  if (error) console.error('[AiBudget] Failed to finalize AI run:', error.message);
+}
+
+export async function cancelAiReservation(reservationId: string): Promise<void> {
+  const { error } = await getSupabaseAdminClient().from('pipeline_runs').delete().eq('id', reservationId);
+  if (error) console.error('[AiBudget] Failed to cancel reservation:', error.message);
+}
+
 export async function recordAiRun(input: {
-  userId: string;
-  cvId?: string;
-  task: string;
-  tokens: number;
-  success: boolean;
-  durationMs: number;
-  error?: string;
+  userId: string; cvId?: string; task: string; tokens: number;
+  success: boolean; durationMs: number; error?: string;
 }): Promise<void> {
   const { error } = await getSupabaseAdminClient().from('pipeline_runs').insert({
     user_id: input.userId,
